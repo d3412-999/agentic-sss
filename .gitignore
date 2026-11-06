@@ -1,0 +1,34 @@
+# ---- Java / Gradle ----
+.idea/
+*.iml
+.gradle/
+build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+*.class
+
+# ---- Node / Vue ----
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.env
+
+# ---- 运行时与本地数据 ----
+data/
+logs/
+*.log
+mysql-data/
+redis-data/
+minio-data/
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
