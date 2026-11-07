@@ -1,28 +1,47 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import Icon from '../components/Icon.vue'
 import { api } from '../api/endpoints'
 import { saveLogin, setMe } from '../stores/session'
+import { theme, toggleTheme } from '../stores/theme'
+import { toast } from '../stores/toast'
 
-// 与 V2__seed_demo_data.sql 的 6 个账号逐一对应（V2 注释明确要求此处一致）。
-// 弱口令仅供本地演示，生产环境必须删除 V2 或改用 profile 隔离。
-const DEMO_PASSWORD = '123456'
-const demoAccounts = [
-  { username: '2023010101', name: '张三', role: 'STUDENT', label: '学生' },
-  { username: '2023010102', name: '李四', role: 'STUDENT', label: '学生' },
-  { username: '2023010103', name: '王五', role: 'STUDENT', label: '学生' },
-  { username: 'T2019008', name: '李文博', role: 'TEACHER', label: '教师' },
-  { username: 'T2019009', name: '周敏', role: 'TEACHER', label: '教师' },
-  { username: 'admin', name: '系统管理员', role: 'ADMIN', label: '管理员' },
-]
-
-const route = useRoute()
 const router = useRouter()
-const form = reactive({ username: '', password: '', role: 'STUDENT' })
+const route = useRoute()
+
+const role = ref('STUDENT')
+const form = reactive({ username: '', password: '' })
+const showPassword = ref(false)
 const loading = ref(false)
 const error = ref('')
+
 const backend = ref('checking')
 const health = ref(null)
+
+const ROLES = [
+  { key: 'STUDENT', label: '学生', hint: '选题 · 提交 · 查看成绩' },
+  { key: 'TEACHER', label: '教师', hint: '开课 · 出题 · 评分发布' },
+  { key: 'ADMIN', label: '管理员', hint: '账号与系统运维' },
+]
+
+const DEMO = [
+  { role: 'STUDENT', username: '2023010101', name: '张三' },
+  { role: 'STUDENT', username: '2023010102', name: '李四' },
+  { role: 'TEACHER', username: 'T2019008', name: '李文博' },
+  { role: 'TEACHER', username: 'T2019009', name: '周敏' },
+  { role: 'ADMIN', username: 'admin', name: '系统管理员' },
+]
+
+const demoList = computed(() => DEMO.filter((d) => d.role === role.value))
+const activeRole = computed(() => ROLES.find((r) => r.key === role.value))
+
+const FEATURES = [
+  { icon: 'target', title: '并发安全的选题', desc: '原子 SQL 预占名额 + 唯一索引兜底，不会超选' },
+  { icon: 'wand', title: 'AI 源码与报告评审', desc: '异步任务队列，评审结果直接参与算分' },
+  { icon: 'chart', title: '可解释的成绩构成', desc: '答辩 / 源码 / 报告三维加权，调整留痕可审计' },
+  { icon: 'shield', title: 'JWT + 幂等写操作', desc: '令牌版本号即时失效，关键写接口防重复提交' },
+]
 
 onMounted(async () => {
   try {
@@ -33,37 +52,39 @@ onMounted(async () => {
   }
 })
 
-function fillDemo(account) {
+function useDemo(account) {
   form.username = account.username
-  form.password = DEMO_PASSWORD
-  form.role = account.role
+  form.password = '123456'
   error.value = ''
-}
-
-function describeError(e) {
-  const trace = e?.traceId ? `（traceId: ${e.traceId}）` : ''
-  return `${e?.message || '登录失败'}${trace}`
 }
 
 async function submit() {
   error.value = ''
+  if (!form.username.trim() || !form.password) {
+    error.value = '请输入学号 / 工号与密码'
+    return
+  }
   loading.value = true
   try {
-    // role 只是前端入口提示，服务端一律以 sys_user 的真实角色为准
     const data = await api.login({
-      username: form.username,
+      username: form.username.trim(),
       password: form.password,
-      role: form.role,
+      role: role.value,
     })
     saveLogin(data)
     try {
       setMe(await api.me())
     } catch {
-      // /me 失败不阻断登录，概览页会再试一次
+      // me 失败不影响登录流程
     }
-    await router.push(String(route.query.redirect || '/'))
-  } catch (e) {
-    error.value = describeError(e)
+    toast.ok('登录成功', `欢迎回来，${data?.user?.name || data?.user?.username || ''}`)
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    router.push(redirect)
+  } catch (err) {
+    const fields = err?.data?.errors
+    error.value = Array.isArray(fields) && fields.length
+      ? fields.map((f) => f.message).join('；')
+      : err.message || '登录失败'
   } finally {
     loading.value = false
   }
@@ -71,61 +92,137 @@ async function submit() {
 </script>
 
 <template>
-  <div class="login-card">
-    <div class="login-head">
-      <div class="brand-mark">S</div>
-      <h1>课程设计智能答辩与评分系统</h1>
-      <p class="muted">选题 · 提交 · 评审 · 答辩 · 评分</p>
-    </div>
-
-    <div v-if="backend === 'up'" class="alert alert--success">
-      后端已连通：{{ health?.app }} · {{ health?.status }}
-    </div>
-    <div v-else-if="backend === 'down'" class="alert alert--error">
-      后端未连通。请先启动 Spring Boot（默认 8081，8080 被本机 nginx 占用），并确认 vue/.env 的
-      VITE_API_TARGET 指向正确端口。
-    </div>
-    <div v-else class="alert alert--info">正在探测后端…</div>
-
-    <div v-if="error" class="alert alert--error">{{ error }}</div>
-
-    <form @submit.prevent="submit">
-      <div class="field">
-        <label for="username">学号 / 工号</label>
-        <input id="username" v-model="form.username" autocomplete="username" placeholder="如 2023010101" required />
-      </div>
-      <div class="field">
-        <label for="password">密码</label>
-        <input id="password" v-model="form.password" type="password" autocomplete="current-password" placeholder="演示密码见下方" required />
-      </div>
-      <div class="field">
-        <label for="role">入口角色（仅作提示，以账号真实角色为准）</label>
-        <select id="role" v-model="form.role">
-          <option value="STUDENT">学生</option>
-          <option value="TEACHER">教师</option>
-          <option value="ADMIN">管理员</option>
-        </select>
-      </div>
-      <button class="btn" type="submit" style="width: 100%" :disabled="loading">
-        {{ loading ? '登录中…' : '登录' }}
-      </button>
-    </form>
-
-    <div style="margin-top: 22px">
-      <h3>演示账号</h3>
-      <p class="muted">统一密码 {{ DEMO_PASSWORD }}，点击即可填充。由 Flyway 的 V2 种子脚本写入。</p>
-      <div class="demo-grid">
-        <button
-          v-for="account in demoAccounts"
-          :key="account.username"
-          class="demo-item"
-          type="button"
-          @click="fillDemo(account)"
-        >
-          <strong>{{ account.name }}</strong>
-          <span>{{ account.label }} · {{ account.username }}</span>
+  <div class="auth">
+    <aside class="auth__aside">
+      <div class="row">
+        <span class="brand-mark">S</span>
+        <div class="sidebar__brand-text">
+          <strong style="color: #fff">智能答辩与评分</strong>
+          <span style="color: #6b7794">agentic-sss</span>
+        </div>
+        <button class="btn btn--icon" style="margin-left: auto; color: #97a3c4" @click="toggleTheme">
+          <Icon :name="theme.mode === 'dark' ? 'sun' : 'moon'" :size="17" />
         </button>
       </div>
-    </div>
+
+      <h1 class="auth__headline">
+        把课程设计<br />
+        从<em>收作业</em>变成一次<br />
+        可解释的评审
+      </h1>
+      <p class="auth__sub">
+        《面向对象程序设计课程设计》全流程支撑：教师开课出题，学生选题提交源码与报告，
+        AI 完成静态与语义评审，成绩按答辩 / 源码 / 报告三维加权发布，每一步都可追溯。
+      </p>
+
+      <div class="auth__features">
+        <div v-for="f in FEATURES" :key="f.title" class="auth__feature">
+          <span class="auth__feature-icon"><Icon :name="f.icon" :size="15" /></span>
+          <div>
+            <strong>{{ f.title }}</strong>
+            <span>{{ f.desc }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="auth__foot">
+        Spring Boot 3 · Vue 3 · FastAPI · MySQL 8 · Redis 7
+      </div>
+    </aside>
+
+    <section class="auth__panel">
+      <div class="auth-box">
+        <h2>登录工作台</h2>
+        <p class="auth-box__sub">{{ activeRole.hint }}</p>
+
+        <div class="auth-status" :class="backend === 'up' ? 'auth-status--ok' : backend === 'down' ? 'auth-status--bad' : ''">
+          <span v-if="backend === 'up'" class="dot-live" />
+          <span v-else-if="backend === 'down'" class="pill__dot" />
+          <span v-else class="spinner" />
+          <span v-if="backend === 'up'">后端已连接 · {{ health?.app }} · {{ health?.status }}</span>
+          <span v-else-if="backend === 'down'">
+            后端未连通。请先启动 Spring Boot（默认 8081），并确认 vue/.env 的 VITE_API_TARGET 指向正确端口。
+          </span>
+          <span v-else>正在探测后端…</span>
+        </div>
+
+        <div class="role-tabs">
+          <button
+            v-for="r in ROLES"
+            :key="r.key"
+            type="button"
+            :class="{ 'is-active': role === r.key }"
+            @click="role = r.key"
+          >
+            {{ r.label }}
+          </button>
+        </div>
+
+        <form class="auth-form" @submit.prevent="submit">
+          <div class="field">
+            <label for="username">学号 / 工号</label>
+            <input
+              id="username"
+              v-model="form.username"
+              class="input"
+              autocomplete="username"
+              :placeholder="role === 'STUDENT' ? '例如 2023010101' : role === 'TEACHER' ? '例如 T2019008' : '例如 admin'"
+            />
+          </div>
+
+          <div class="field">
+            <label for="password">密码</label>
+            <div style="position: relative">
+              <input
+                id="password"
+                v-model="form.password"
+                class="input"
+                :type="showPassword ? 'text' : 'password'"
+                autocomplete="current-password"
+                placeholder="演示账号统一密码 123456"
+                style="padding-right: 42px"
+              />
+              <button
+                type="button"
+                class="btn btn--icon"
+                style="position: absolute; right: 2px; top: 1px; height: 34px"
+                :title="showPassword ? '隐藏密码' : '显示密码'"
+                @click="showPassword = !showPassword"
+              >
+                <Icon name="eye" :size="16" />
+              </button>
+            </div>
+          </div>
+
+          <div v-if="error" class="alert alert--danger">
+            <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+            <span>{{ error }}</span>
+          </div>
+
+          <button class="btn btn--primary btn--block" type="submit" :disabled="loading" style="height: 40px">
+            <span v-if="loading" class="spinner" />
+            {{ loading ? '正在登录…' : `以${activeRole.label}身份登录` }}
+          </button>
+        </form>
+
+        <div style="margin-top: 22px">
+          <div class="row small dim">
+            <span>演示账号（密码 123456）</span>
+            <span class="spacer" />
+            <span>点击自动填充</span>
+          </div>
+          <div class="demo-grid">
+            <button v-for="d in demoList" :key="d.username" class="demo-chip" type="button" @click="useDemo(d)">
+              <Icon name="users" :size="13" />
+              <span><strong>{{ d.username }}</strong> · {{ d.name }}</span>
+            </button>
+          </div>
+        </div>
+
+        <p class="small dim" style="margin-top: 22px">
+          登录即表示你了解：演示数据与默认口令仅用于本地开发环境。
+        </p>
+      </div>
+    </section>
   </div>
 </template>
