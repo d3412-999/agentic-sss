@@ -1,0 +1,23 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    AI 能力服务（FastAPI，http://127.0.0.1:8000）。
+    选配：不启动也能跑通前后端主链路，调用 AI 时后端统一降级为 50301 AI_UNAVAILABLE。
+    用的是 langchain_service/.venv 里的解释器（没有就先进 langchain_service 执行
+    python -m venv .venv 与 pip install -r requirements.txt）。
+  -->
+  <configuration default="false" name="3. AI 服务 (FastAPI :8000)" type="ShConfigurationType" factoryName="Shell Script">
+    <option name="SCRIPT_TEXT" value="" />
+    <option name="INDEPENDENT_SCRIPT_PATH" value="true" />
+    <option name="SCRIPT_PATH" value="$PROJECT_DIR$/langchain_service/main.py" />
+    <option name="SCRIPT_OPTIONS" value="" />
+    <option name="INDEPENDENT_SCRIPT_WORKING_DIRECTORY" value="true" />
+    <option name="SCRIPT_WORKING_DIRECTORY" value="$PROJECT_DIR$/langchain_service" />
+    <option name="INDEPENDENT_INTERPRETER_PATH" value="true" />
+    <option name="INTERPRETER_PATH" value="$PROJECT_DIR$/langchain_service/.venv/Scripts/python.exe" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="EXECUTE_IN_TERMINAL" value="false" />
+    <option name="EXECUTE_SCRIPT_FILE" value="true" />
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

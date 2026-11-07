@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Aggregator only: it holds no code and is not the parent of the module.
+      It lets an IDE open the repository root and resolve every module plus
+      third-party dependencies in one step, and gives a single build entry:
+
+          mvn compile / mvn package        (repository root)
+    -->
+
+    <groupId>org.spring_web</groupId>
+    <artifactId>sss-aggregator</artifactId>
+    <version>0.1.0</version>
+    <packaging>pom</packaging>
+    <name>agentic-sss</name>
+    <description>Course-design defense and grading system - Maven aggregator</description>
+
+    <modules>
+        <module>spring boot_service</module>
+    </modules>
+
+    <properties>
+        <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+    </properties>
+</project>

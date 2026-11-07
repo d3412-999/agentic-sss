@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    前端 Vite dev server（http://127.0.0.1:5173）。
+    代理目标写在 vue/.env 的 VITE_API_TARGET（默认 http://127.0.0.1:8081），
+    改后端端口时只改 vue/.env 即可，不用动这个 Run Configuration。
+  -->
+  <configuration default="false" name="2. 前端 vue (npm run dev :5173)" type="js.build_tools.npm" factoryName="npm">
+    <package-json value="$PROJECT_DIR$/vue/package.json" />
+    <command value="run" />
+    <scripts>
+      <script value="dev" />
+    </scripts>
+    <node-interpreter value="project" />
+    <envs />
+    <method v="2" />
+  </configuration>
+</component>

@@ -1,0 +1,51 @@
+# ---- Secrets: never commit real credentials ----
+.env
+*.env
+!.env.example
+!**/.env.example
+
+# ---- Java / Maven ----
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / Vite ----
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Runtime data ----
+data/
+logs/
+*.log
+*.rdb
+
+# ---- IDE: share only project-wide IDEA settings ----
+.idea/*
+!.idea/misc.xml
+!.idea/encodings.xml
+!.idea/runConfigurations/
+*.iml
+*.iws
+*.ipr
+.vscode/*
+!.vscode/extensions.json
+
+# ---- OS ----
+Thumbs.db
+.DS_Store

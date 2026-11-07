@@ -1,0 +1,52 @@
+name: sss
+
+# Local infrastructure for development: MySQL + Redis.
+# Credentials and ports come from .env (copy it first: cp .env.example .env);
+# every default below matches .env.example and application.yaml.
+#
+#   docker compose up -d
+#   docker compose ps          # wait for both services to become healthy
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sss-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-sss}
+      MYSQL_USER: ${DB_USER:-sss}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-sss123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "${DB_USER:-sss}", "-p${DB_PASSWORD:-sss123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.2
+    container_name: sss-redis
+    restart: unless-stopped
+    # Password must match application.yaml (spring.data.redis.password / REDIS_PASSWORD)
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-123456}"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-123456}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mysql-data:
+  redis-data:
