@@ -1,25 +1,36 @@
-"""答辩相关内部接口（骨架，暂未实现）。"""
+"""答辩接口：生成答辩题、答辩评分。"""
 
-from typing import Any
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter, Depends, HTTPException, status
-
-from app.api.deps import require_internal_token
+from app.api.deps import get_defense_service, require_internal_token
+from app.schemas.defense import (
+    DefenseEvaluateRequest,
+    DefenseEvaluationResponse,
+    DefenseQuestionRequest,
+    DefenseQuestionResponse,
+)
+from app.services.defense_service import DefenseService
 
 router = APIRouter(
-    prefix="/internal/ai",
-    tags=["defense"],
+    prefix="/internal/ai/defense",
+    tags=["答辩"],
     dependencies=[Depends(require_internal_token)],
 )
 
 
-@router.post("/defense/questions", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def generate_defense_questions(payload: dict[str, Any]) -> None:
-    """根据题目、源码、报告生成答辩题（对应 API 文档 21.1）。"""
-    raise HTTPException(status_code=501, detail="defense question generation is not implemented yet")
+@router.post("/questions", response_model=DefenseQuestionResponse)
+async def generate_questions(
+    request: DefenseQuestionRequest,
+    service: DefenseService = Depends(get_defense_service),
+) -> DefenseQuestionResponse:
+    """根据题目、源码与报告生成答辩题（对应 API 文档 21.1）。"""
+    return await service.generate_questions(request)
 
 
-@router.post("/defense/evaluate", status_code=status.HTTP_501_NOT_IMPLEMENTED)
-async def evaluate_defense(payload: dict[str, Any]) -> None:
-    """根据转写稿与音频评分（对应 API 文档 21.2）。"""
-    raise HTTPException(status_code=501, detail="defense evaluation is not implemented yet")
+@router.post("/evaluate", response_model=DefenseEvaluationResponse)
+async def evaluate_defense(
+    request: DefenseEvaluateRequest,
+    service: DefenseService = Depends(get_defense_service),
+) -> DefenseEvaluationResponse:
+    """根据答辩转写稿与音频元信息评分（对应 API 文档 21.2）。"""
+    return await service.evaluate(request)
