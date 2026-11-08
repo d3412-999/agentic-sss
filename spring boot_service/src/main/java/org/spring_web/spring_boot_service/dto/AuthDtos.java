@@ -26,6 +26,13 @@ public final class AuthDtos {
             @NotBlank(message = "refreshToken 不能为空") String refreshToken) {
     }
 
+    /**
+     * 登出请求体。refreshToken 可选：带上就在服务端消费掉，
+     * 否则「登出后刷新令牌仍然可用」。accessToken 仍从 Authorization 头读取。
+     */
+    public record LogoutRequest(String refreshToken) {
+    }
+
     public record PasswordChangeRequest(
             @NotBlank(message = "原密码不能为空") String oldPassword,
             @NotBlank(message = "新密码不能为空")

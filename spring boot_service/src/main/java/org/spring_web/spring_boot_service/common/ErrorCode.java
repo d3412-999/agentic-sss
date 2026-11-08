@@ -31,7 +31,9 @@ public enum ErrorCode {
     TOO_MANY_REQUESTS(42901, HttpStatus.TOO_MANY_REQUESTS, "请求过于频繁"),
 
     INTERNAL_ERROR(50000, HttpStatus.INTERNAL_SERVER_ERROR, "服务端异常"),
-    AI_UNAVAILABLE(50301, HttpStatus.SERVICE_UNAVAILABLE, "AI 服务暂不可用");
+    AI_UNAVAILABLE(50301, HttpStatus.SERVICE_UNAVAILABLE, "AI 服务暂不可用"),
+    REDIS_UNAVAILABLE(50302, HttpStatus.SERVICE_UNAVAILABLE, "Redis 不可用，请先启动 Redis 再重试"),
+    DATABASE_UNAVAILABLE(50303, HttpStatus.SERVICE_UNAVAILABLE, "数据库不可用，请先启动 MySQL 再重试");
 
     private final int code;
     private final HttpStatus httpStatus;

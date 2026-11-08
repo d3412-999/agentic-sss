@@ -148,9 +148,9 @@ public class TopicService {
         if (request.expectedTech() != null) {
             topic.setExpectedTech(json.write(request.expectedTech()));
         }
-        if (request.status() != null) {
-            topic.setStatus(request.status());
-        }
+        // 状态只能走 publish / archive，避免绕过「发布前置校验」直接改状态
+        BizAssert.param(request.status() == null || request.status().equals(topic.getStatus()),
+                "题目状态请使用发布 / 归档接口变更");
         topic.setVersion(request.version());
         topic.setUpdatedAt(Times.now());
         if (topicMapper.updateById(topic) == 0) {
@@ -210,7 +210,12 @@ public class TopicService {
             topic.setStatus("PUBLISHED");
             topic.setPublishedAt(Times.now());
             topic.setUpdatedAt(Times.now());
-            published += topicMapper.updateById(topic);
+            if (topicMapper.updateById(topic) == 0) {
+                // 乐观锁冲突：不能再静默丢弃，否则调用方既不算成功也不算失败
+                failed.add(new TopicDtos.Failed(rawId, "题目状态已变更，请刷新后重试"));
+            } else {
+                published++;
+            }
         }
         return new TopicDtos.PublishBatchResult(published, failed);
     }

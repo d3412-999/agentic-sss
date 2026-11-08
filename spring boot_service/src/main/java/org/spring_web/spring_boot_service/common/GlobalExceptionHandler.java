@@ -4,9 +4,13 @@ import jakarta.validation.ConstraintViolationException;
 import java.util.List;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -71,6 +75,26 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Result<Object>> handleAccessDenied(AccessDeniedException ex) {
         return build(ErrorCode.FORBIDDEN, null);
+    }
+
+    /**
+     * Redis 是登录、幂等、令牌的硬依赖。连不上时给出「去启 Redis」的明确提示，
+     * 而不是让前端看到一个含糊的 50000。
+     * Redis 停掉后已建立的连接会先触发 QueryTimeoutException，所以两种都要接。
+     */
+    @ExceptionHandler({RedisConnectionFailureException.class, QueryTimeoutException.class})
+    public ResponseEntity<Result<Object>> handleRedisDown(Exception ex) {
+        log.error("Redis unavailable, traceId={}, cause={}", Result.currentTraceId(), ex.getMessage());
+        return build(ErrorCode.REDIS_UNAVAILABLE, Map.of(
+                "hint", "启动 Redis 后重试：docker compose up -d redis 或 scripts/start-redis.ps1"));
+    }
+
+    /** MySQL 不可用同样给明确提示（Hikari 拿不到连接时是 CannotGetJdbcConnectionException）。 */
+    @ExceptionHandler({CannotGetJdbcConnectionException.class, DataAccessResourceFailureException.class})
+    public ResponseEntity<Result<Object>> handleDatabaseDown(Exception ex) {
+        log.error("Database unavailable, traceId={}, cause={}", Result.currentTraceId(), ex.getMessage());
+        return build(ErrorCode.DATABASE_UNAVAILABLE, Map.of(
+                "hint", "启动 MySQL 后重试：确认 3306 端口已监听，或 docker compose up -d mysql"));
     }
 
     @ExceptionHandler(Exception.class)

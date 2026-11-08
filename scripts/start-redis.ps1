@@ -31,6 +31,18 @@ function Find-RedisBinary([string]$name, [string]$dirHint) {
         $p = Join-Path $dirHint $name
         if (Test-Path $p) { return $p }
     }
+    # 常见 Windows 安装位置；也可以用 REDIS_HOME / -RedisHome 指定
+    $candidates = @(
+        'C:\Redis',
+        'C:\Program Files\Redis',
+        'C:\Program Files (x86)\Redis',
+        (Join-Path $env:LOCALAPPDATA 'Redis'),
+        (Join-Path $env:ProgramData 'chocolatey\lib\redis-64\tools')
+    )
+    foreach ($dir in $candidates) {
+        $p = Join-Path $dir $name
+        if (Test-Path $p) { return $p }
+    }
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $null
@@ -48,8 +60,17 @@ if (Test-RedisPort $Port) {
         Start-Process -FilePath $server -ArgumentList $serverArgs -WorkingDirectory $dir -WindowStyle Hidden
         Write-Host "[redis] launching $server"
     } else {
-        if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-            throw 'No redis-server.exe (set $env:REDIS_HOME) and no docker found. Install Redis or use Docker.'
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        if (-not $docker) {
+            throw 'No redis-server.exe found. Set $env:REDIS_HOME (folder containing redis-server.exe) or install Docker.'
+        }
+        # 守护进程没起时 docker run 会卡住，先做一次快速探测（3s 超时）
+        $probe = Start-Process -FilePath 'docker' -ArgumentList 'info', '--format', '{{.ServerVersion}}' `
+            -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\sss-docker-probe.txt" `
+            -RedirectStandardError "$env:TEMP\sss-docker-probe.err"
+        if (-not $probe.WaitForExit(3000)) { $probe.Kill(); $probe.WaitForExit() }
+        if ($probe.ExitCode -ne 0) {
+            throw 'Docker daemon is not running. Start Docker Desktop, or set $env:REDIS_HOME to your Redis folder.'
         }
         & docker run -d --name $Container -p "${Port}:6379" redis:7.2 --requirepass $Password | Out-Null
         Write-Host "[redis] started docker container $Container"

@@ -92,6 +92,10 @@ public class SelectionService {
                 .eq(OfferingStudent::getStatus, "ACTIVE"));
         BizAssert.forbidden(inRoster != null && inRoster > 0, "开课");
 
+        // 2.1 串行化同一学生的并发选题：对名单行加锁，让下面的限额判断看到最新数据。
+        //     若不加锁，「已有 + 本次 ≤ 上限」是读后写判断，并发请求会同时通过。
+        offeringStudentMapper.lockStudentRelation(offeringId, studentId);
+
         // 3. 去重 + 单次批量上限
         Set<String> distinct = new LinkedHashSet<>(request.topicIds());
         BizAssert.param(distinct.size() == request.topicIds().size(), "不能重复选择同一题目");
@@ -222,12 +226,16 @@ public class SelectionService {
     }
 
     /** 上传材料后把选题状态推进到 SUBMITTED，供 SubmissionService 复用。 */
+    @Transactional(rollbackFor = Exception.class)
     public void markSubmitted(Long selectionId) {
         Selection selection = BizAssert.found(selectionMapper.selectById(selectionId), "选题");
         if ("SELECTED".equals(selection.getStatus())) {
             selection.setStatus("SUBMITTED");
             selection.setUpdatedAt(Times.now());
-            selectionMapper.updateById(selection);
+            if (selectionMapper.updateById(selection) == 0) {
+                // 并发下状态已被别的请求推进，不算失败；只有写入异常才需要暴露
+                throw new BizException(ErrorCode.CONFLICT, "选题状态已变更，请刷新后重试");
+            }
         }
     }
 

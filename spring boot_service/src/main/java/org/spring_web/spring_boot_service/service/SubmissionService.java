@@ -90,7 +90,12 @@ public class SubmissionService {
             submission.setUpdatedAt(Times.now());
             submissionMapper.insert(submission);
         }
-        int nextVersion = (submission.getLatestVersion() == null ? 0 : submission.getLatestVersion()) + 1;
+        // 版本号由数据库原子分配：并发上传时「查出来再 +1」会撞 (submission_id, version) 唯一索引
+        if (submissionMapper.bumpLatestVersion(submission.getId()) != 1) {
+            throw new BizException(ErrorCode.CONFLICT, "版本号分配失败，请重试");
+        }
+        Submission latest = BizAssert.found(submissionMapper.selectById(submission.getId()), "提交物");
+        int nextVersion = latest.getLatestVersion() == null ? 1 : latest.getLatestVersion();
 
         SubmissionVersion version = new SubmissionVersion();
         version.setSubmissionId(submission.getId());

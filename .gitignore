@@ -4,13 +4,16 @@
 !.env.example
 !**/.env.example
 
-# ---- Java / Maven ----
-target/
+# ---- Java / Gradle ----
+.gradle/
 build/
 out/
 *.class
 *.jar
 *.war
+# Gradle Wrapper 的 jar 必须入库，否则别人 clone 后没有 wrapper 可用
+!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 
 # ---- Python ----
 __pycache__/
@@ -40,6 +43,7 @@ logs/
 .idea/*
 !.idea/misc.xml
 !.idea/encodings.xml
+!.idea/gradle.xml
 !.idea/runConfigurations/
 *.iml
 *.iws

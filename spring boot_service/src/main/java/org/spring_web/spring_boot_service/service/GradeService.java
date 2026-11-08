@@ -51,6 +51,8 @@ import org.spring_web.spring_boot_service.security.SecurityUtils;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 /**
@@ -87,6 +89,7 @@ public class GradeService {
     private final SysUserMapper sysUserMapper;
     private final OfferingService offeringService;
     private final AsyncTaskService taskService;
+    private final PlatformTransactionManager transactionManager;
     private final AuditLogService auditLog;
     private final NotificationService notificationService;
     private final FileStorageService fileStorage;
@@ -98,15 +101,27 @@ public class GradeService {
             String offeringId, String keyword, String status, long page, long size) {
         Long oid = BizAssert.id(offeringId, "offeringId");
         offeringService.ownedOffering(offeringId);
+        // 关键词必须在 SQL 里过滤：先分页再在内存里筛，total 与实际条数会对不上
+        List<Long> matchedIds = null;
+        if (StringUtils.hasText(keyword)) {
+            matchedIds = sysUserMapper.selectList(new LambdaQueryWrapper<SysUser>()
+                            .select(SysUser::getId)
+                            .and(w -> w.like(SysUser::getName, keyword)
+                                    .or().like(SysUser::getStudentNo, keyword)))
+                    .stream().map(SysUser::getId).toList();
+            if (matchedIds.isEmpty()) {
+                return PageResult.of(List.of(), 0, page, size);
+            }
+        }
         Page<Grade> result = gradeMapper.selectPage(Page.of(page, size),
                 new LambdaQueryWrapper<Grade>()
                         .eq(Grade::getOfferingId, oid)
+                        .in(matchedIds != null, Grade::getStudentId, matchedIds)
                         .eq(StringUtils.hasText(status) && !"all".equals(status),
                                 Grade::getStatus, status)
                         .orderByDesc(Grade::getId));
         List<GradeDtos.GradeListItemVO> list = result.getRecords().stream()
                 .map(this::listItemVo)
-                .filter(g -> matches(g, keyword))
                 .toList();
         return PageResult.of(list, result.getTotal(), page, size);
     }
@@ -308,8 +323,13 @@ public class GradeService {
             boolean overwrite = request != null && request.overwriteAdjusted();
             int total = Math.max(1, targetStudents.size());
             int done = 0;
+            // computeForStudent 带 @Transactional，但这里是同一个 bean 内的自调用，
+            // 注解不会生效；用 TransactionTemplate 显式给每个学生一个事务，
+            // 避免「grade 已更新、grade_item 删除后未重建」的中间状态。
+            TransactionTemplate tx = new TransactionTemplate(transactionManager);
             for (Long studentId : targetStudents) {
-                computeForStudent(offering, studentId, overwrite);
+                Long sid = studentId;
+                tx.executeWithoutResult(status -> computeForStudent(offering, sid, overwrite));
                 done++;
                 taskService.markProgress(taskId, 5 + (int) (95L * done / total));
             }
@@ -549,11 +569,6 @@ public class GradeService {
                 grade.getFinalScore(), grade.getLevel(), grade.getStatus(),
                 Integer.valueOf(1).equals(grade.getAdjusted()), grade.getPublishedAt() != null,
                 Times.offset(grade.getUpdatedAt()));
-    }
-
-    private boolean matches(GradeDtos.GradeListItemVO grade, String keyword) {
-        return !StringUtils.hasText(keyword) || grade.name().contains(keyword)
-                || grade.studentNo().contains(keyword);
     }
 
     private GradeDtos.StudentGradeVO studentVo(Grade grade) {

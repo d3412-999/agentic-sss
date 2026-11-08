@@ -21,6 +21,7 @@ const detail = ref(null)
 const submissions = ref([])
 const detailLoading = ref(false)
 const uploadState = reactive({ SOURCE: { progress: 0, busy: false }, REPORT: { progress: 0, busy: false } })
+const selectedRow = ref(null)
 
 const MAX = { SOURCE: 100 * 1024 ** 2, REPORT: 50 * 1024 ** 2 }
 const ACCEPT = { SOURCE: '.zip,.jar', REPORT: '.pdf,.docx,.doc' }
@@ -37,8 +38,6 @@ const steps = computed(() => {
     { key: 'grade', label: '成绩', done: status === 'GRADED' },
   ]
 })
-
-const selectedRow = ref(null)
 
 function fmtDate(value) {
   if (!value) return '—'
@@ -320,8 +319,8 @@ onMounted(load)
         <!-- 版本列表 -->
         <div>
           <div class="row section-title">
-            <Icon name="layers" :size="14" />提交版本
-            <span class="spacer small dim">共 {{ submissions.length }} 条</span>
+            <Icon name="layers" :size="14" />已提交材料
+            <span class="spacer small dim">每类仅显示最新版本（{{ submissions.length }} 项）</span>
           </div>
           <div v-if="!submissions.length" class="card" style="border-style: dashed">
             <EmptyState icon="upload" title="还没有上传" hint="上传后会自动触发异步解析与 AI 评审" />
@@ -332,8 +331,8 @@ onMounted(load)
                 {{ sub.type === 'SOURCE' ? '源码' : '报告' }}
               </span>
               <div style="min-width: 0; flex: 1">
-                <div class="list-row__title">v{{ sub.version }} · {{ sizeText(sub.size) }}</div>
-                <div class="list-row__meta">{{ fmtDate(sub.createdAt) }}</div>
+                <div class="list-row__title">最新版本 v{{ sub.version }} · {{ sizeText(sub.size) }}</div>
+                <div class="list-row__meta">{{ fmtDate(sub.createdAt) }} · 重新上传会生成新版本并自动评审</div>
               </div>
               <StatusPill :status="sub.status" />
               <div class="row" style="gap: 2px">

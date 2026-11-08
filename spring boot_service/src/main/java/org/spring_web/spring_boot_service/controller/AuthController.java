@@ -2,6 +2,7 @@ package org.spring_web.spring_boot_service.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.Result;
@@ -28,10 +29,11 @@ public class AuthController {
 
     private final AuthService authService;
 
-    @Operation(summary = "登录，返回 accessToken 与 refreshToken")
+    @Operation(summary = "登录，返回 accessToken 与 refreshToken（失败按 用户名 + IP 限流）")
     @PostMapping("/login")
-    public Result<AuthDtos.TokenResponse> login(@Valid @RequestBody AuthDtos.LoginRequest request) {
-        return Result.ok(authService.login(request));
+    public Result<AuthDtos.TokenResponse> login(@Valid @RequestBody AuthDtos.LoginRequest request,
+                                                HttpServletRequest servletRequest) {
+        return Result.ok(authService.login(request, clientIp(servletRequest)));
     }
 
     @Operation(summary = "轮换刷新令牌，旧令牌立即失效")
@@ -40,13 +42,23 @@ public class AuthController {
         return Result.ok(authService.refresh(request));
     }
 
-    @Operation(summary = "登出，当前 accessToken 加入黑名单")
+    @Operation(summary = "登出：accessToken 进黑名单，并作废随请求带来的 refreshToken")
     @PostMapping("/logout")
-    public Result<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization) {
+    public Result<Void> logout(@RequestHeader(value = "Authorization", required = false) String authorization,
+                               @RequestBody(required = false) AuthDtos.LogoutRequest body) {
         String token = authorization == null || !authorization.startsWith(BEARER)
                 ? null : authorization.substring(BEARER.length());
-        authService.logout(token);
+        authService.logout(token, body == null ? null : body.refreshToken());
         return Result.ok();
+    }
+
+    /** 取真实客户端 IP：优先 X-Forwarded-For 的第一段（反代场景），否则用直连地址。 */
+    private String clientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     @Operation(summary = "当前登录用户与所属开课")

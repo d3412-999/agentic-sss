@@ -1,4 +1,5 @@
 import { request, upload, download, toQuery, newIdempotencyKey } from './http'
+import { session } from '../stores/session'
 
 /**
  * 与后端 59 个 @*Mapping 一一对应。
@@ -8,7 +9,9 @@ export const api = {
   /* ---------------- 健康检查 / 认证 ---------------- */
   health: () => request('/health', { auth: false }),
   login: (payload) => request('/auth/login', { method: 'POST', body: payload, auth: false }),
-  logout: () => request('/auth/logout', { method: 'POST' }),
+  // 带上 refreshToken，服务端会一并作废，避免登出后旧刷新令牌仍能换新令牌
+  logout: () =>
+    request('/auth/logout', { method: 'POST', body: { refreshToken: session.refreshToken || null } }),
   me: () => request('/auth/me'),
   changePassword: (payload) => request('/auth/password', { method: 'PUT', body: payload }),
 

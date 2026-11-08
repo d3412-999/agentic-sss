@@ -62,7 +62,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 | 安全 | Spring Security 6 + JJWT 0.12，`Authorization: Bearer <token>` |
 | 存储 | MySQL 8（Flyway 自动建表）、Redis 7（限流 / 幂等 / 令牌）、本地磁盘（`./data/objects`） |
 | AI 服务 | Python 3.12+、FastAPI、LangChain（规划中） |
-| 构建 | Maven（根 `pom.xml` 为聚合器）+ GitHub Actions |
+| 构建 | Gradle 9 + Wrapper（`./gradlew build`）+ GitHub Actions |
 
 ## 架构
 
@@ -83,7 +83,6 @@ MySQL:3306  Redis:6379   FastAPI :8000（AI 能力，不对外暴露）
 
 ```
 agentic-sss/
-├── pom.xml                        # Maven 聚合器（IDE 打开本目录即可）
 ├── docker-compose.yml             # 本地 MySQL + Redis
 ├── .env.example                   # 环境变量样例
 ├── docs/
@@ -92,8 +91,9 @@ agentic-sss/
 ├── scripts/
 │   ├── init-local-db.sql          # 用本机 MySQL 时建库建账号
 │   └── start-redis.ps1            # Windows 下启动本机 Redis
-├── spring boot_service/           # 后端
-│   ├── pom.xml
+├── spring boot_service/           # 后端（Gradle 工程）
+│   ├── build.gradle / settings.gradle / gradle.properties
+│   ├── gradlew / gradlew.bat / gradle/wrapper/
 │   ├── tools/gen_entities.py      # 从 DDL 反向生成 entity / mapper
 │   └── src/main/
 │       ├── java/org/spring_web/spring_boot_service/
@@ -122,7 +122,7 @@ agentic-sss/
 | 工具 | 版本 |
 |---|---|
 | JDK | 17 |
-| Maven | 3.9+ |
+| Gradle | 随仓库自带 Wrapper（9.0.0，无需本机安装） |
 | Node.js / npm | 18+ / 9+ |
 | Python | 3.12+（仅 AI 服务需要） |
 | MySQL | 8.0+ |
@@ -147,7 +147,7 @@ powershell -ExecutionPolicy Bypass -File scripts\start-redis.ps1
 
 ```bash
 cd "spring boot_service"
-mvn spring-boot:run
+gradlew.bat bootRun        # Linux / macOS: ./gradlew bootRun
 ```
 
 首次启动 Flyway 自动建 22 张表并写入演示数据。
@@ -229,7 +229,7 @@ python main.py
 
 仓库已带 `.idea/runConfigurations/`（共享运行配置）与 UTF-8 编码设置：
 
-1. `File → Open` 选择仓库根目录，等待 Maven 导入完成；
+1. `File → Open` 选择仓库根目录，等待 Gradle 同步完成（用自带 Wrapper，无需本机装 Gradle）；
 2. 右上角依次运行 `1. 后端 sss-backend (:8081)`、`2. 前端 vue (npm run dev :5173)`、`3. AI 服务 (FastAPI :8000)`；
 3. 若 SDK 名称不一致，在 `Project Structure → Project SDK` 选择本机 JDK 17。
 
@@ -244,7 +244,7 @@ python main.py
 - 前端不引入 UI 框架：组件与样式集中在 `src/components` 与 `src/styles/main.css`，新增页面复用既有 class。
 
 ```bash
-mvn -DskipTests package                                   # 构建后端（仓库根目录）
+cd "spring boot_service" && gradlew.bat build -x test          # 构建后端（Linux/macOS: ./gradlew build -x test）
 cd vue && npm run build                                   # 构建前端
 python "spring boot_service/tools/gen_entities.py"        # 重新生成实体
 ```
@@ -255,6 +255,17 @@ python "spring boot_service/tools/gen_entities.py"        # 重新生成实体
 - 本文：运行、配置、接口概览；
 - 运行后访问 Swagger 查看全部 59 个接口的参数与示例。
 
+## 常见问题
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| 登录返回 `50302 Redis 不可用` | Redis 没起：`docker compose up -d redis` 或 `scripts/start-redis.ps1`（脚本会按 `REDIS_HOME`/PATH/常见目录查找 redis-server.exe） |
+| 接口返回 `50303 数据库不可用` | MySQL 没起或端口不是 3306，确认后重启后端 |
+| 登录返回 `42901` | 同一用户名或同一 IP 1 分钟内失败过多（用户名 5 次、IP 20 次），等 1 分钟 |
+| 选题返回 `42201 TOPIC_FULL` | 题目名额已被别人抢完，刷新题目列表重选 |
+| 上传后一直 `PARSING` | AI 服务未启动：`cd langchain_service && python main.py`，不启动会在降级后停在解析失败 |
+| `gradlew` 报 JDK 版本错误 | Gradle 9 要求 JDK 17+，`JAVA_HOME` 指到 JDK 17（`D:\a\jdk\jdk17`） |
+
 ## 已知限制
 
 - AI 服务的 5 个 `/internal/ai/**` 接口返回 501 占位；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
@@ -263,7 +274,7 @@ python "spring boot_service/tools/gen_entities.py"        # 重新生成实体
 
 ## 贡献
 
-欢迎提交 Issue 与 Pull Request。提交前请确保 `mvn -DskipTests package` 与 `npm run build` 均通过（CI 同样会检查）。
+欢迎提交 Issue 与 Pull Request。提交前请确保 `./gradlew build -x test`（在 `spring boot_service/` 下）与 `npm run build` 均通过（CI 同样会检查）。
 
 ## 许可证
 

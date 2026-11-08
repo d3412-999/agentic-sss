@@ -62,21 +62,29 @@ public class AuthService {
     private final SssProperties properties;
     private final AuditLogService auditLog;
 
-    public AuthDtos.TokenResponse login(AuthDtos.LoginRequest request) {
-        String rateKey = "sss:login:fail:" + request.username();
+    /**
+     * 登录：失败计数按「用户名」与「来源 IP」两个维度分别累计。
+     * 只按用户名计数会让攻击者用错误密码把别人的账号锁住 1 分钟；
+     * IP 维度的阈值放宽一些，避免同一个 NAT 出口的班级用户互相影响。
+     */
+    public AuthDtos.TokenResponse login(AuthDtos.LoginRequest request, String clientIp) {
+        String userKey = "sss:login:fail:user:" + request.username();
+        String ipKey = "sss:login:fail:ip:" + (StringUtils.hasText(clientIp) ? clientIp : "unknown");
         SysUser user = userMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, request.username())
                 .last("limit 1"));
         boolean credentialOk = user != null
                 && passwordEncoder.matches(request.password(), user.getPasswordHash());
         if (!credentialOk) {
-            checkRateLimit(rateKey);
+            int limit = properties.getLimits().getLoginAttemptsPerMinute();
+            checkRateLimit(userKey, limit, "登录尝试过于频繁，请稍后再试");
+            checkRateLimit(ipKey, limit * 4, "该网络登录失败次数过多，请稍后再试");
             throw new BizException(ErrorCode.LOGIN_FAILED);
         }
         if (!"ACTIVE".equals(user.getStatus())) {
             throw new BizException(ErrorCode.ACCOUNT_DISABLED);
         }
-        redis.delete(rateKey);
+        redis.delete(userKey);
 
         SysUser fresh = new SysUser();
         fresh.setId(user.getId());
@@ -85,13 +93,13 @@ public class AuthService {
         return issue(user);
     }
 
-    private void checkRateLimit(String rateKey) {
+    private void checkRateLimit(String rateKey, int limit, String message) {
         Long attempts = redis.opsForValue().increment(rateKey);
         if (attempts != null && attempts == 1L) {
             redis.expire(rateKey, Duration.ofMinutes(1));
         }
-        if (attempts != null && attempts > properties.getLimits().getLoginAttemptsPerMinute()) {
-            throw new BizException(ErrorCode.TOO_MANY_REQUESTS, "登录尝试过于频繁，请稍后再试");
+        if (attempts != null && attempts > limit) {
+            throw new BizException(ErrorCode.TOO_MANY_REQUESTS, message);
         }
     }
 
@@ -142,18 +150,31 @@ public class AuthService {
         return issue(user);
     }
 
-    public void logout(String bearerToken) {
-        if (!StringUtils.hasText(bearerToken)) {
-            return;
-        }
-        try {
-            Claims claims = jwtService.parse(bearerToken);
-            long remaining = claims.getExpiration().getTime() - System.currentTimeMillis();
-            if (remaining > 0) {
-                tokenStore.blacklist(claims.getId(), Duration.ofMillis(remaining));
+    /**
+     * 登出：accessToken 进黑名单（剩余有效期）+ 消费客户端带来的 refreshToken。
+     * 只拉黑 accessToken 的话，被窃取的 refreshToken 仍能换出新令牌。
+     */
+    public void logout(String bearerToken, String refreshToken) {
+        if (StringUtils.hasText(bearerToken)) {
+            try {
+                Claims claims = jwtService.parse(bearerToken);
+                long remaining = claims.getExpiration().getTime() - System.currentTimeMillis();
+                if (remaining > 0) {
+                    tokenStore.blacklist(claims.getId(), Duration.ofMillis(remaining));
+                }
+            } catch (JwtException | IllegalArgumentException ex) {
+                // 登出是尽力而为，令牌本身无效也无需报错
             }
-        } catch (JwtException | IllegalArgumentException ex) {
-            // 登出是尽力而为，令牌本身无效也无需报错
+        }
+        if (StringUtils.hasText(refreshToken)) {
+            try {
+                Claims claims = jwtService.parse(refreshToken);
+                if (jwtService.isRefresh(claims)) {
+                    tokenStore.consumeRefresh(claims.getId());
+                }
+            } catch (JwtException | IllegalArgumentException ex) {
+                // 无效 / 过期的 refreshToken：同样无需报错
+            }
         }
     }
 
