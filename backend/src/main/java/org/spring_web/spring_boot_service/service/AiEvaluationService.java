@@ -101,6 +101,22 @@ public class AiEvaluationService {
                 version.setJavaFileCount(stats.javaFiles());
                 version.setCodeLines(stats.codeLines());
                 version.setBuildTool(stats.buildTool());
+
+                // 空包 / 只有非 Java 文件时直接判 INVALID，绝不把空源码交给 AI“凭感觉”打分
+                if (stats.javaFiles() == 0 || snippet.isBlank()) {
+                    parseResult.put("valid", false);
+                    parseResult.put("note", "源码包中未找到可评审的 Java 文件");
+                    version.setParseResult(json.write(parseResult));
+                    version.setStatus("INVALID");
+                    version.setUpdatedAt(Times.now());
+                    versionMapper.updateById(version);
+
+                    fail(taskId, submission, version, "源码包中未找到 Java 文件，无法评审", true);
+                    submission.setStatus("INVALID");
+                    submission.setUpdatedAt(Times.now());
+                    submissionMapper.updateById(submission);
+                    return;
+                }
             } else {
                 // PDF 用 PDFBox、DOCX 用 POI 抽取正文；失败时不中断上传，但把失败原因落进 parseResult
                 ReportTextExtractor.ExtractedReport extracted =
@@ -235,6 +251,9 @@ public class AiEvaluationService {
                 analysis.setCreatedAt(Times.now());
             }
             analysis.setStatus("FAILED");
+            analysis.setScore(BigDecimal.ZERO.setScale(1));
+            analysis.setGrade(null);
+            analysis.setModel("failed");
             analysis.setToolErrors(json.write(List.of(Map.of("tool", "AI", "message", message))));
             analysis.setUpdatedAt(Times.now());
             if (analysis.getId() == null) {
@@ -253,6 +272,9 @@ public class AiEvaluationService {
                 evaluation.setCreatedAt(Times.now());
             }
             evaluation.setStatus("FAILED");
+            evaluation.setScore(BigDecimal.ZERO.setScale(1));
+            evaluation.setGrade(null);
+            evaluation.setModel("failed");
             evaluation.setSummary(message);
             evaluation.setUpdatedAt(Times.now());
             if (evaluation.getId() == null) {

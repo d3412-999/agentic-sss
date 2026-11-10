@@ -44,6 +44,28 @@ class CodeReviewService:
         )
         clipped_request = material.model_copy(update={"java_files": source.java_files})
 
+        # 防御性兜底：没有任何 Java 源码时不允许大模型“凭感觉”给及格分
+        has_code = any(file.content.strip() for file in clipped_request.java_files)
+        if not has_code:
+            zero_dimensions = [
+                DimensionScore(
+                    key=spec.key,
+                    name=spec.name,
+                    weight=spec.weight,
+                    score=0,
+                    comment="未提供可评审的 Java 源码",
+                )
+                for spec in CODE_DIMENSION_SPECS
+            ]
+            return CodeReviewResponse(
+                submission_id=request.submission_id,
+                score=0,
+                model="guard",
+                dimensions=zero_dimensions,
+                suggestions=["请提交包含 .java 源文件的 ZIP 包后重新分析"],
+                summary="源码包中没有可评审的 Java 文件，本次源码语义分为 0。",
+            )
+
         result = await self._llm.generate_json(
             task="code_review",
             schema=CodeReviewDraft,
