@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from './Icon.vue'
 import { session, currentRole, clearSession } from '../stores/session'
-import { toggleTheme, theme } from '../stores/theme'
+import { nextThemeMode, theme, themeName, toggleTheme } from '../stores/theme'
 import { api } from '../api/endpoints'
 
 const emit = defineEmits(['close'])
@@ -37,9 +37,9 @@ const actions = computed(() => {
   list.push(
     {
       id: 'theme',
-      label: theme.mode === 'dark' ? '切换到浅色主题' : '切换到深色主题',
+      label: `切换到${themeName(nextThemeMode(theme.mode))}主题`,
       hint: '外观',
-      icon: theme.mode === 'dark' ? 'sun' : 'moon',
+      icon: nextThemeMode(theme.mode) === 'dark' ? 'moon' : 'sun',
       run: toggleTheme,
     },
     {

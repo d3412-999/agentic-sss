@@ -100,7 +100,7 @@ async function submit() {
           <strong style="color: #fff">智能答辩与评分</strong>
           <span style="color: #6b7794">agentic-sss</span>
         </div>
-        <button class="btn btn--icon" style="margin-left: auto; color: #97a3c4" @click="toggleTheme">
+        <button class="btn btn--icon" style="margin-left: auto; color: #97a3c4" title="切换主题" @click="toggleTheme">
           <Icon :name="theme.mode === 'dark' ? 'sun' : 'moon'" :size="17" />
         </button>
       </div>

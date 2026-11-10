@@ -7,7 +7,7 @@ import ToastHost from './ToastHost.vue'
 import ConfirmHost from './ConfirmHost.vue'
 import { api, ROLE_LABEL } from '../api/endpoints'
 import { session, currentRole, clearSession, setMe } from '../stores/session'
-import { theme, toggleTheme } from '../stores/theme'
+import { nextThemeMode, theme, themeName, toggleTheme } from '../stores/theme'
 import { activeCount, resumeTracking } from '../stores/tasks'
 import { toast } from '../stores/toast'
 
@@ -179,7 +179,7 @@ defineExpose({ refreshUnread: loadUnread })
             <span class="kbd topbar__search-text">Ctrl K</span>
           </button>
 
-          <button class="btn btn--icon" :title="theme.mode === 'dark' ? '浅色主题' : '深色主题'" @click="toggleTheme">
+          <button class="btn btn--icon" :title="`切换到${themeName(nextThemeMode(theme.mode))}主题`" @click="toggleTheme">
             <Icon :name="theme.mode === 'dark' ? 'sun' : 'moon'" :size="17" />
           </button>
 

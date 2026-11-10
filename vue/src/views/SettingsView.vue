@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import { api, ROLE_LABEL } from '../api/endpoints'
 import { session, currentRole, clearSession, setMe } from '../stores/session'
-import { theme, toggleTheme } from '../stores/theme'
+import { THEMES, setTheme, theme } from '../stores/theme'
 import { toast, toastError } from '../stores/toast'
 
 const router = useRouter()
@@ -17,6 +17,7 @@ const form = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 
 const user = computed(() => me.value || session.user || {})
 const roleText = computed(() => ROLE_LABEL[currentRole.value] || currentRole.value || '—')
+const themeHint = computed(() => THEMES.find((item) => item.key === theme.mode)?.hint || '')
 const passwordValid = computed(() => form.newPassword.length >= 8 && form.newPassword.length <= 64 && /[A-Za-z]/.test(form.newPassword) && /\d/.test(form.newPassword))
 
 async function load() {
@@ -149,13 +150,18 @@ onMounted(load)
       <div style="display: grid; gap: 16px; align-content: start">
         <section class="card card--pad">
           <div class="section-title"><Icon name="sun" :size="14" />外观</div>
-          <div class="row">
-            <div>
-              <div style="font-weight: 560">{{ theme.mode === 'dark' ? '深色主题' : '浅色主题' }}</div>
-              <div class="small dim">跟随你的选择保存在本地</div>
-            </div>
-            <button class="btn btn--ghost btn--sm spacer" @click="toggleTheme">切换</button>
+          <div class="tabs" style="margin-bottom: 10px">
+            <button
+              v-for="item in THEMES"
+              :key="item.key"
+              class="tabs__item"
+              :class="{ 'is-active': theme.mode === item.key }"
+              @click="setTheme(item.key)"
+            >
+              <Icon :name="item.icon" :size="14" style="margin-right: 5px; vertical-align: -2px" />{{ item.label }}
+            </button>
           </div>
+          <p class="small dim" style="margin: 0">{{ themeHint }} · 选择会保存在本地</p>
         </section>
 
         <section class="card card--pad">
