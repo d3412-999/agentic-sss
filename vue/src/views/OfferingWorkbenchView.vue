@@ -7,6 +7,7 @@ import OverviewTab from '../components/offering/OverviewTab.vue'
 import TopicsTab from '../components/offering/TopicsTab.vue'
 import StudentsTab from '../components/offering/StudentsTab.vue'
 import GradesTab from '../components/offering/GradesTab.vue'
+import ExcellentWorksTab from '../components/offering/ExcellentWorksTab.vue'
 import SettingsTab from '../components/offering/SettingsTab.vue'
 import Modal from '../components/Modal.vue'
 import { api } from '../api/endpoints'
@@ -28,6 +29,7 @@ const TABS = [
   { key: 'topics', label: '题目', icon: 'file' },
   { key: 'students', label: '学生', icon: 'users' },
   { key: 'grades', label: '成绩', icon: 'chart' },
+  { key: 'excellent', label: '优秀作品', icon: 'check' },
   { key: 'settings', label: '设置', icon: 'gear' },
 ]
 
@@ -134,6 +136,7 @@ onMounted(load)
     />
     <StudentsTab v-else-if="tab === 'students'" :offering-id="offeringId" @changed="reloadDashboard()" />
     <GradesTab v-else-if="tab === 'grades'" :offering-id="offeringId" :offering="offering" />
+    <ExcellentWorksTab v-else-if="tab === 'excellent'" :offering-id="offeringId" />
     <SettingsTab v-else-if="tab === 'settings' && offering" :offering="offering" @saved="load" />
 
     <Modal v-if="blockers" title="暂时无法发布" @close="blockers = null">

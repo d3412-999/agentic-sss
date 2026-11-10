@@ -13,6 +13,7 @@ from app.services.consistency_service import ConsistencyService
 from app.services.defense_service import DefenseService
 from app.services.llm_service import LlmService
 from app.services.report_service import ReportService
+from app.services.template_service import TemplateService
 
 
 @lru_cache
@@ -36,9 +37,15 @@ def get_defense_service() -> DefenseService:
 
 
 @lru_cache
+def get_template_service() -> TemplateService:
+    """获取优秀作品模板库服务单例。"""
+    return TemplateService(get_settings())
+
+
+@lru_cache
 def get_report_service() -> ReportService:
     """获取报告评审服务单例。"""
-    return ReportService(get_settings(), get_llm_service())
+    return ReportService(get_settings(), get_llm_service(), get_template_service())
 
 
 @lru_cache

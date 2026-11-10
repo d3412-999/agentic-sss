@@ -59,6 +59,7 @@ public class AiEvaluationService {
     private final SelectionMapper selectionMapper;
     private final TopicMapper topicMapper;
     private final FileStorageService fileStorage;
+    private final ReportTextExtractor reportTextExtractor;
     private final AiServiceClient aiClient;
     private final AsyncTaskService taskService;
     private final NotificationService notificationService;
@@ -88,6 +89,8 @@ public class AiEvaluationService {
             boolean source = "SOURCE".equals(type);
             Map<String, Object> parseResult = new LinkedHashMap<>();
             String snippet = "";
+            String reportText = "";
+            Integer pageCount = null;
             if (source) {
                 ZipStats stats = inspectZip(path);
                 snippet = stats.snippet();
@@ -99,10 +102,24 @@ public class AiEvaluationService {
                 version.setCodeLines(stats.codeLines());
                 version.setBuildTool(stats.buildTool());
             } else {
-                // 未引入 PDFBox / POI，暂不做正文抽取；页数保持 null，绝不猜一个数
+                // PDF 用 PDFBox、DOCX 用 POI 抽取正文；失败时不中断上传，但把失败原因落进 parseResult
+                ReportTextExtractor.ExtractedReport extracted =
+                        reportTextExtractor.extract(path, file.getFilename());
+                reportText = extracted.text();
+                pageCount = extracted.pageCount();
+                file.setExtractedText(reportText);
+                file.setPageCount(pageCount);
+                file.setUpdatedAt(Times.now());
+                fileObjectMapper.updateById(file);
+
                 parseResult.put("sizeBytes", file.getSizeBytes());
-                parseResult.put("textExtracted", false);
-                parseResult.put("note", "PDF/DOCX 正文抽取待接入专用解析库");
+                parseResult.put("textExtracted", extracted.success());
+                parseResult.put("textLength", reportText.length());
+                parseResult.put("pageCount", pageCount);
+                if (extracted.error() != null) {
+                    parseResult.put("textExtractError", extracted.error());
+                }
+                version.setPageCount(pageCount);
             }
             version.setParseResult(json.write(parseResult));
             version.setStatus("VALID");
@@ -122,7 +139,8 @@ public class AiEvaluationService {
             payload.put("topicTitle", topic == null ? "" : topic.getTitle());
             payload.put("buildTool", parseResult.getOrDefault("buildTool", "PLAIN"));
             payload.put("codeSnippet", source ? snippet : "");
-            payload.put("reportText", "");
+            payload.put("reportText", reportText);
+            payload.put("pageCount", pageCount);
 
             try {
                 Map<String, Object> response = source

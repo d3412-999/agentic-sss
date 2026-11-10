@@ -22,6 +22,8 @@ class ReportEvaluateRequest(CamelModel):
     requirements: str = ""
     # Java 侧抽取的 PDF/DOCX 正文；未抽取时为空字符串
     report_text: str = ""
+    # Java 侧解析出的 PDF 页数；DOCX 或解析失败时为 null
+    page_count: int | None = None
 
 
 class ReportProblem(CamelModel):

@@ -7,7 +7,7 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.routes import code, consistency, defense, health, report
+from app.api.routes import code, consistency, defense, health, report, template
 from app.core.security import verify_internal_token
 
 api_router = APIRouter()
@@ -23,5 +23,6 @@ internal_router.include_router(defense.router)
 internal_router.include_router(report.router)
 internal_router.include_router(code.router)
 internal_router.include_router(consistency.router)
+internal_router.include_router(template.router)
 
 api_router.include_router(internal_router)

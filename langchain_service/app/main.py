@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api.deps import get_rag_service
+from app.api.deps import get_rag_service, get_template_service
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import AiServiceError
@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
         "启用" if settings.lightrag_enabled else "关闭",
     )
     yield
+    await get_template_service().close()
     await get_rag_service().close()
     logger.info("AI 服务已关闭")
 

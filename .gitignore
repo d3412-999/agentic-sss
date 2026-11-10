@@ -52,3 +52,6 @@ logs/
 # ---- OS ----
 Thumbs.db
 .DS_Store
+
+# Python 测试缓存
+.pytest-data/

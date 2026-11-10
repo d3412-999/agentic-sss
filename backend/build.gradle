@@ -54,6 +54,10 @@ dependencies {
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
 
+    // 报告正文抽取：PDF 用 PDFBox，DOCX 用 Apache POI
+    implementation 'org.apache.pdfbox:pdfbox:3.0.3'
+    implementation 'org.apache.poi:poi-ooxml:5.3.0'
+
     // Lombok：编译期注解处理
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'

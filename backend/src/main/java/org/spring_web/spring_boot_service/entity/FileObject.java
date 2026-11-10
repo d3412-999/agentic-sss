@@ -57,6 +57,16 @@ public class FileObject {
     private String sha256;
 
     /**
+     * 抽取的正文（报告正文 / 源码摘要）
+     */
+    private String extractedText;
+
+    /**
+     * 报告页数（PDF 可读，DOCX 通常为空）
+     */
+    private Integer pageCount;
+
+    /**
      * 上传人
      */
     private Long createdBy;

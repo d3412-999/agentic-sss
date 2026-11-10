@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     rag_max_code_chars: int = 30000
     rag_max_section_chars: int = 8000
 
+    # ---- 优秀作品模板库 ----
+    # 使用 Python 标准库 sqlite3 持久化；LightRAG 可用时同时写入 LightRAG
+    template_db_path: str = "./data/template_library.db"
+
     @property
     def llm_ready(self) -> bool:
         """大模型是否可用：mock 模式始终可用，openai 模式必须配置密钥。"""

@@ -98,6 +98,9 @@ X-Internal-Token: change-me
 | POST | `/internal/ai/report/evaluate` | 报告评审 |
 | POST | `/internal/ai/code/review` | 源码语义评审 |
 | POST | `/internal/ai/consistency` | 报告-源码一致性检查 |
+| POST | `/internal/ai/template/index` | 把优秀作品写入模板库（LightRAG + 本地） |
+| POST | `/internal/ai/template/search` | 检索优秀作品模板 |
+| DELETE | `/internal/ai/template/{docId}` | 删除模板 |
 
 ### 兼容 Java 后端的简化入参
 
@@ -184,6 +187,6 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 ## 说明
 
 - 真实大模型链路需要配置 `LLM_API_KEY`；未配置时建议先用 mock 模式联调。
-- 后端当前尚未抽取 PDF 正文，`reportText` 可能为空，报告评审会按空内容处理；
+- 后端已用 PDFBox / POI 抽取报告正文，扫描版 PDF 无文本层时会按空内容处理；
   接入 PDFBox / pypdf 后本服务无需修改即可按章节评审。
 - 答辩出题与评分接口已实现，但 Java 侧的 WebSocket 语音链路尚未接入。

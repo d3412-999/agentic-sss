@@ -88,6 +88,17 @@ export const api = {
     upload('/files', { file, query: { purpose }, onProgress }),
   downloadFile: (fileId, filename) => download(`/files/${fileId}/download`, filename),
 
+  /* ---------------- 教师：优秀作品模板库 ---------------- */
+  excellentWorkCandidates: (offeringId) =>
+    request(`/teacher/offerings/${offeringId}/excellent-works/candidates`),
+  excellentWorks: (offeringId) => request(`/teacher/offerings/${offeringId}/excellent-works`),
+  addExcellentWork: (offeringId, payload) =>
+    request(`/teacher/offerings/${offeringId}/excellent-works`, { method: 'POST', body: payload }),
+  deleteExcellentWork: (offeringId, workId) =>
+    request(`/teacher/offerings/${offeringId}/excellent-works/${workId}`, { method: 'DELETE' }),
+  reindexExcellentWork: (offeringId, workId) =>
+    request(`/teacher/offerings/${offeringId}/excellent-works/${workId}/reindex`, { method: 'POST' }),
+
   /* ---------------- 成绩 ---------------- */
   teacherGrades: (offeringId, params) =>
     request(`/teacher/offerings/${offeringId}/grades${toQuery(params)}`),

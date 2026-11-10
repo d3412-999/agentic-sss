@@ -70,6 +70,21 @@ public class AiServiceClient {
         return post("/consistency", payload);
     }
 
+    /** 把优秀作品写入 AI 模板库（LightRAG 优先，未启用时写本地模板索引）。 */
+    public Map<String, Object> indexTemplate(Map<String, Object> payload) {
+        return post("/template/index", payload);
+    }
+
+    /** 检索模板库，供报告评审等场景做 RAG 参考。 */
+    public Map<String, Object> searchTemplate(Map<String, Object> payload) {
+        return post("/template/search", payload);
+    }
+
+    /** 从模板库删除文档。 */
+    public void deleteTemplate(String docId) {
+        delete("/template/" + docId);
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> post(String path, Map<String, Object> payload) {
         try {
@@ -81,6 +96,17 @@ public class AiServiceClient {
             return body instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
         } catch (RestClientException | IllegalStateException ex) {
             // AI 服务未启动 / 返回 501 / 超时，统一转成 50301，由上层决定降级策略
+            throw new BizException(ErrorCode.AI_UNAVAILABLE, "AI 服务暂不可用：" + ex.getMessage());
+        }
+    }
+
+    private void delete(String path) {
+        try {
+            restClient.delete()
+                    .uri(PREFIX + path)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException | IllegalStateException ex) {
             throw new BizException(ErrorCode.AI_UNAVAILABLE, "AI 服务暂不可用：" + ex.getMessage());
         }
     }

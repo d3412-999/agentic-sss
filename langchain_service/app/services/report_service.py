@@ -19,15 +19,17 @@ from app.services.scoring import (
     normalize_dimensions,
     weighted_total,
 )
+from app.services.template_service import TemplateService
 from app.utils.text_utils import clip_report_material, split_report_text
 
 
 class ReportService:
     """课程设计报告评审服务。"""
 
-    def __init__(self, settings: Settings, llm: LlmService) -> None:
+    def __init__(self, settings: Settings, llm: LlmService, templates: TemplateService) -> None:
         self._settings = settings
         self._llm = llm
+        self._templates = templates
 
     async def evaluate(self, request: ReportEvaluateRequest) -> ReportEvaluationResponse:
         """评审报告内容，返回维度分、亮点与问题。"""
@@ -35,6 +37,8 @@ class ReportService:
         # Java 后端尚未抽取 PDF 正文时 reportText 为空；接入后可直接切成章节
         if not report.sections and request.report_text.strip():
             report = report.model_copy(update={"sections": split_report_text(request.report_text)})
+        if not report.page_count and request.page_count:
+            report = report.model_copy(update={"page_count": request.page_count})
 
         topic = request.topic
         if topic is None and request.topic_title:
@@ -47,11 +51,15 @@ class ReportService:
         )
         clipped_request = request.model_copy(update={"report": report, "topic": topic})
 
+        # 从优秀作品模板库检索相似案例，作为评分参考；没有模板时返回空列表
+        query_parts = [topic.title if topic else "", report.sections[0].content[:600] if report.sections else ""]
+        reference_contexts = self._templates.search_contexts(" ".join(query_parts).strip(), top_k=2)
+
         result = await self._llm.generate_json(
             task="report_evaluation",
             schema=ReportEvaluationDraft,
             system_prompt=SYSTEM_PROMPT,
-            user_prompt=build_user_prompt(clipped_request),
+            user_prompt=build_user_prompt(clipped_request, reference_contexts),
             mock_factory=lambda: mock_report_evaluation(clipped_request),
         )
 
@@ -68,5 +76,5 @@ class ReportService:
             dimensions=dimensions,
             highlights=draft.highlights,
             problems=draft.problems,
-            page_count=request.report.page_count,
+            page_count=report.page_count,
         )

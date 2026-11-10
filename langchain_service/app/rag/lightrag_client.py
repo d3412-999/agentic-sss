@@ -69,6 +69,14 @@ class LightRagClient:
                         return value
         raise LightRagError("LightRAG 返回结构无法识别")
 
+    async def delete_document(self, doc_id: str) -> None:
+        """按文档 ID 删除 LightRAG 中的文档（尽力而为，不同版本接口可能不同）。"""
+        try:
+            response = await self._client.delete(f"/documents/{doc_id}")
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise LightRagError(f"LightRAG 删除失败：{exc}") from exc
+
     async def close(self) -> None:
         """关闭底层 HTTP 连接。"""
         await self._client.aclose()

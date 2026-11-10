@@ -16,7 +16,8 @@ SYSTEM_PROMPT = """你是一名《面向对象程序设计》课程设计报告�
 1. 只依据报告内容评分，不要虚构报告中没有的内容；
 2. 指出具体章节中的问题，并给出可执行的改进建议；
 3. 评价设计图、类图、数据库设计是否与文字描述一致；
-4. 只输出 JSON，不要输出 Markdown 代码块或额外说明。
+4. 如果提供了【优秀作品参考片段】，只用来校准评分尺度，不要照抄内容或把参考作品的优点算到本报告头上；
+5. 只输出 JSON，不要输出 Markdown 代码块或额外说明。
 
 输出 JSON 结构：
 {
@@ -32,7 +33,10 @@ SYSTEM_PROMPT = """你是一名《面向对象程序设计》课程设计报告�
 """
 
 
-def build_user_prompt(request: ReportEvaluateRequest) -> str:
+def build_user_prompt(
+    request: ReportEvaluateRequest,
+    reference_contexts: list[str] | None = None,
+) -> str:
     """拼接报告评审的用户提示词。"""
     topic_title = request.topic.title if request.topic else "未提供"
     topic_requirements = ""
@@ -44,6 +48,9 @@ def build_user_prompt(request: ReportEvaluateRequest) -> str:
     section_lines = [
         f"### {section.title}\n{section.content}" for section in request.report.sections
     ]
+    reference_block = ""
+    if reference_contexts:
+        reference_block = "\n【优秀作品参考片段】\n" + "\n\n".join(reference_contexts) + "\n"
 
     return f"""报告评审对象：{request.submission_id}
 【题目】{topic_title}
@@ -52,5 +59,5 @@ def build_user_prompt(request: ReportEvaluateRequest) -> str:
 
 【报告内容】
 {chr(10).join(section_lines) or '（未提供）'}
-
+{reference_block}
 请按六个维度评分，并给出亮点、问题与改进建议。"""
