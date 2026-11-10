@@ -1,27 +1,32 @@
-"""答辩链路占位：路径与 Java AiServiceClient 21.1 / 21.2 一一对应。"""
+"""答辩接口：生成答辩题、答辩评分。"""
 
-from typing import Any
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter
+from app.api.deps import get_defense_service
+from app.schemas.defense import (
+    DefenseEvaluateRequest,
+    DefenseEvaluationResponse,
+    DefenseQuestionRequest,
+    DefenseQuestionResponse,
+)
+from app.services.defense_service import DefenseService
 
-from app.api.routes.common import not_implemented
-
-router = APIRouter(tags=["defense"])
-
-
-@router.post("/defense/questions")
-async def generate_defense_questions(payload: dict[str, Any]):
-    """根据题目、源码与报告生成答辩题（API 文档 21.1）。"""
-    return not_implemented(
-        "/internal/ai/defense/questions",
-        "接入 LLM 后按 topic / source / report 生成问题列表",
-    )
+router = APIRouter(prefix="/defense", tags=["答辩"])
 
 
-@router.post("/defense/evaluate")
-async def evaluate_defense(payload: dict[str, Any]):
-    """根据答辩转写稿与音频给分（API 文档 21.2）。"""
-    return not_implemented(
-        "/internal/ai/defense/evaluate",
-        "需先实现 ASR 转写与 WebSocket 答辩会话",
-    )
+@router.post("/questions", response_model=DefenseQuestionResponse)
+async def generate_questions(
+    request: DefenseQuestionRequest,
+    service: DefenseService = Depends(get_defense_service),
+) -> DefenseQuestionResponse:
+    """根据题目、源码与报告生成答辩题（对应 API 文档 21.1）。"""
+    return await service.generate_questions(request)
+
+
+@router.post("/evaluate", response_model=DefenseEvaluationResponse)
+async def evaluate_defense(
+    request: DefenseEvaluateRequest,
+    service: DefenseService = Depends(get_defense_service),
+) -> DefenseEvaluationResponse:
+    """根据答辩转写稿与音频元信息评分（对应 API 文档 21.2）。"""
+    return await service.evaluate(request)

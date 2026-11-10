@@ -1,26 +1,46 @@
-"""FastAPI 应用入口。"""
+"""FastAPI 应用入口：注册路由、异常处理与生命周期。"""
 
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.api.deps import get_rag_service
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.exceptions import AiServiceError
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # TODO: 初始化 LLM 客户端、LightRAG 客户端、日志与链路追踪
+    """服务启动与关闭时的资源管理。"""
+    settings = get_settings()
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    logger.info(
+        "AI 服务启动：环境=%s，大模型=%s，LightRAG=%s",
+        settings.environment,
+        settings.llm_provider,
+        "启用" if settings.lightrag_enabled else "关闭",
+    )
     yield
+    await get_rag_service().close()
+    logger.info("AI 服务已关闭")
 
 
 def create_app() -> FastAPI:
+    """创建 FastAPI 应用。"""
     settings = get_settings()
     app = FastAPI(
-        title="SSS AI Service",
-        description="课程设计智能答辩与评分系统 - AI 能力服务（LangChain + LightRAG）",
+        title="课程设计智能答辩与评分系统 - AI 服务",
+        description="答辩出题、答辩评分、报告评审、源码语义评审与一致性检查",
         version=__version__,
         lifespan=lifespan,
     )
@@ -30,6 +50,16 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(AiServiceError)
+    async def handle_ai_service_error(request: Request, exc: AiServiceError) -> JSONResponse:
+        """把业务异常转换为统一错误结构。"""
+        logger.warning("请求 %s 处理失败：%s", request.url.path, exc.message)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"code": exc.code, "message": exc.message},
+        )
+
     app.include_router(api_router)
     return app
 

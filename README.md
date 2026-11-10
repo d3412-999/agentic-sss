@@ -63,7 +63,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 | 教学组织 | 课程模板、开课生命周期（草稿→发布→关闭→归档）、学生名单、教学仪表盘 | ✅ |
 | 题目与选题 | 出题、批量发布/归档、学生浏览；选题用「原子 SQL 预占 + 唯一索引」防超选 | ✅ |
 | 提交与文件 | 源码 zip / 报告上传（SHA-256 秒传、Zip Slip 检查）、版本历史、异步解析 | ✅ |
-| AI 评审 | 异步调用 AI 服务做源码与报告评审，结果落库并参与算分 | ⚠️ 链路已通，AI 侧为 501 占位 |
+| AI 评审 | 异步调用 AI 服务做源码与报告评审，结果落库并参与算分 | ✅ 已实现（mock 可联调，真实评审需配置 LLM_API_KEY） |
 | 成绩 | 三维加权算分、人工调整（原因入审计）、发布/撤销、异步导出 CSV、学生查询 | ✅ |
 | 通知与任务 | 站内通知、跨页面任务中心（进度轮询、取消、结果查看） | ✅ |
 | 前端工作台 | 12 个页面、深色主题、命令面板（Ctrl K）、响应式布局、骨架屏与空态 | ✅ |
@@ -103,7 +103,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 | 后端 | Spring Boot 3.3.5、Java 17、MyBatis-Plus 3.5.7、Flyway 10.22 |
 | 安全 | Spring Security 6 + JJWT 0.12，`Authorization: Bearer <token>` |
 | 存储 | MySQL 8（Flyway 自动建表）、Redis 7（限流 / 幂等 / 令牌）、本地磁盘（`./data/objects`） |
-| AI 服务 | Python 3.12+、FastAPI、LangChain（规划中） |
+| AI 服务 | Python 3.12+、FastAPI、LangChain（OpenAI 兼容）+ LightRAG（可选） |
 | 构建 | Gradle 9 + Wrapper（`./gradlew build`）+ GitHub Actions |
 
 ## 架构
@@ -151,7 +151,7 @@ agentic-sss/
 │       └── resources/{application.yaml, db/migration/}
 ├── langchain_service/             # AI 服务（FastAPI）
 │   ├── main.py
-│   └── app/{core,api}/
+│   └── app/{core,api,schemas,prompts,services,rag,utils}/
 ├── vue/                           # 前端
 │   ├── vite.config.js
 │   └── src/
@@ -230,6 +230,8 @@ python main.py
 ```
 
 不启动 AI 服务也能跑通主链路，涉及 AI 的能力会降级为 `50301 AI_UNAVAILABLE`。
+
+没有大模型 Key 时，可以在 langchain_service/.env 里把 LLM_PROVIDER 改为 mock，AI 接口会返回结构完整的示例数据，便于前后端联调。
 
 ### 6. 演示账号
 
@@ -339,7 +341,7 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 
 ## 已知限制
 
-- AI 服务的 5 个 `/internal/ai/**` 接口返回 501 占位；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
+- AI 服务的 5 个 `/internal/ai/**` 接口已实现（默认 mock 模式可联调）；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
 - 报告上传后未抽取 PDF 正文，`reportText` 为空，AI 报告评分为盲评，需接入 PDFBox 或 Python 侧解析。
 - 演示数据与默认口令仅供本地使用。部署到生产前必须：删除或隔离 `V2__seed_demo_data.sql`、替换 `JWT_SECRET` 与 `AI_INTERNAL_TOKEN`、收紧 CORS 白名单、更换全部默认口令、限制 AI 服务网络访问（详见 [SECURITY.md](SECURITY.md)）。
 

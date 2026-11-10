@@ -1,19 +1,23 @@
-"""探活接口：免鉴权，供运维与 README 验证清单使用。"""
-
-from datetime import datetime, timezone
+"""健康检查：同时暴露大模型与 LightRAG 的可用状态。"""
 
 from fastapi import APIRouter
 
 from app import __version__
+from app.core.config import get_settings
 
-router = APIRouter(tags=["health"])
+router = APIRouter(tags=["健康检查"])
 
 
 @router.get("/health")
-async def health() -> dict:
+async def health() -> dict[str, object]:
+    """返回服务状态与依赖配置情况。"""
+    settings = get_settings()
     return {
         "status": "UP",
-        "app": "sss-ai-service",
+        "app": settings.app_name,
+        "environment": settings.environment,
         "version": __version__,
-        "time": datetime.now(timezone.utc).isoformat(),
+        "llmProvider": settings.llm_provider,
+        "llmReady": settings.llm_ready,
+        "lightragEnabled": settings.lightrag_enabled,
     }

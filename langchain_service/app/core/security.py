@@ -10,13 +10,13 @@ async def verify_internal_token(
 ) -> None:
     """校验 X-Internal-Token。
 
-    与 Java 侧 AiServiceClient 的 ``defaultHeader("X-Internal-Token", ...)``
-    以及 ``sss.ai.internal-token`` 对应；两边默认值都是 ``change-me``。
+    与 Java 侧 AiServiceClient 的默认请求头以及 application.yaml 中的
+    sss.ai.internal-token 对应；两边默认值都是 change-me。
     AI 服务不对浏览器开放，前端永远不应直接调用 /internal/ai/**。
     """
     expected = get_settings().internal_token
     if expected and x_internal_token != expected:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or missing X-Internal-Token",
+            detail="内部令牌无效",
         )
