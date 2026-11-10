@@ -28,7 +28,11 @@ public class AiServiceClient {
 
     public AiServiceClient(SssProperties properties, RestClient.Builder builder) {
         SssProperties.Ai ai = properties.getAi();
+        // 必须显式使用 HTTP/1.1：JDK HttpClient 默认尝试 HTTP/2（明文下先发 h2c Upgrade），
+        // 而 AI 服务使用的 uvicorn/h11 不支持 h2c 升级，会把请求体解析坏，
+        // 表现为 400 "Invalid HTTP request received" 或 422 "body missing"。
         HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(ai.getConnectTimeout())
                 .build();
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
