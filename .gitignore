@@ -39,16 +39,14 @@ logs/
 *.log
 *.rdb
 
-# ---- IDE: share only project-wide IDEA settings ----
-.idea/*
-!.idea/misc.xml
-!.idea/encodings.xml
-!.idea/gradle.xml
-!.idea/runConfigurations/
+# ---- IDE: 不入库 ----
+# clone 后直接用 IDEA 打开仓库根目录、按 backend / vue / langchain_service 三个模块
+# 自己建运行配置即可；IDE 配置带有本机路径与 SDK 名，提交上去只会污染他人环境。
+.idea/
 *.iml
 *.iws
 *.ipr
-.vscode/*
+.vscode/
 !.vscode/extensions.json
 
 # ---- OS ----

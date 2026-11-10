@@ -10,7 +10,7 @@
 -- 这里的口令必须与以下三处保持一致：
 --   .env.example                                      (DB_NAME / DB_USER / DB_PASSWORD)
 --   docker-compose.yml                                (同名环境变量的默认值)
---   spring boot_service/src/main/resources/application.yaml (datasource 默认值)
+--   backend/src/main/resources/application.yaml (datasource 默认值)
 -- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS sss

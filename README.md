@@ -1,8 +1,20 @@
 # 课程设计智能答辩与评分系统（agentic-sss）
 
-面向《面向对象程序设计课程设计》这类课程的 AI 辅助教学系统，覆盖 **选题 → 提交 → 源码/报告评审 → 语音答辩 → 评分发布** 全流程。
+> 面向《面向对象程序设计课程设计》这类课程的 AI 辅助教学系统，覆盖 **选题 → 提交 → 源码/报告评审 → 语音答辩 → 评分发布** 全流程。
 
 Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工作台前端 + 独立部署的 FastAPI AI 服务。
+
+<!-- 部署到 GitHub 后把 OWNER/REPO 换成实际地址，并放开下面这行 CI 徽章 -->
+<!-- [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml) -->
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/17/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.5-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![Vue](https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Python%203.12-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)](https://www.mysql.com/)
+[![Redis](https://img.shields.io/badge/Redis-7.x-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 
 ![教师概览](docs/screenshots/02-teacher-dashboard.jpg)
 
@@ -12,6 +24,36 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 <td width="50%"><img src="docs/screenshots/01-login.jpg" alt="登录页" /></td>
 </tr>
 </table>
+
+## 目录
+
+- [为什么做这个项目](#为什么做这个项目)
+- [功能特性](#功能特性)
+- [界面](#界面)
+- [技术栈](#技术栈)
+- [架构](#架构)
+- [目录结构](#目录结构)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [API](#api)
+- [用 IDEA 运行](#用-idea-运行)
+- [开发约定](#开发约定)
+- [测试与 CI](#测试与-ci)
+- [文档](#文档)
+- [常见问题](#常见问题)
+- [已知限制](#已知限制)
+- [路线图](#路线图)
+- [贡献](#贡献)
+- [许可证](#许可证)
+
+## 为什么做这个项目
+
+课程设计的痛点在“过程”而不是“结果”：出题靠 Excel、选题靠抢、材料散落在群文件里、答辩时凭印象给分，
+最后成绩构成说不清楚。这个项目把整条流程收进一个系统：教师配置开课 → 学生选题并提交材料 →
+系统异步做源码/报告评审 → 教师核对分数并发布，每一步都有状态、留痕与可解释的算分依据。
+
+它同时是一个**全栈工程实践样本**：真实的分层后端（Controller / Service / Mapper + Flyway 迁移）、
+无 UI 框架的前端设计系统、独立部署的 AI 服务，以及可复现的本地环境（Docker Compose）与 CI。
 
 ## 功能特性
 
@@ -57,8 +99,8 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 
 | 层 | 技术 |
 |---|---|
-| 前端 | Vue 3 + Vite + Vue Router（原生 `fetch` 封装，无 UI 框架、无图标库） |
-| 后端 | Spring Boot 3.3.5、Java 17、MyBatis-Plus 3.5.7、Flyway 10 |
+| 前端 | Vue 3.5 + Vite 6 + Vue Router 4（原生 `fetch` 封装，无 UI 框架、无图标库） |
+| 后端 | Spring Boot 3.3.5、Java 17、MyBatis-Plus 3.5.7、Flyway 10.22 |
 | 安全 | Spring Security 6 + JJWT 0.12，`Authorization: Bearer <token>` |
 | 存储 | MySQL 8（Flyway 自动建表）、Redis 7（限流 / 幂等 / 令牌）、本地磁盘（`./data/objects`） |
 | AI 服务 | Python 3.12+、FastAPI、LangChain（规划中） |
@@ -83,15 +125,21 @@ MySQL:3306  Redis:6379   FastAPI :8000（AI 能力，不对外暴露）
 
 ```
 agentic-sss/
+├── .github/
+│   ├── workflows/ci.yml           # 三模块并行 CI
+│   ├── ISSUE_TEMPLATE/            # Bug / 功能建议表单
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── dependabot.yml             # 依赖自动升级
 ├── docker-compose.yml             # 本地 MySQL + Redis
 ├── .env.example                   # 环境变量样例
+├── .editorconfig / .gitattributes # 编辑器与换行约定
 ├── docs/
 │   ├── 需求文档.md                 # 角色/状态机/功能需求/创新点/验收清单
 │   └── screenshots/               # README 用截图
 ├── scripts/
 │   ├── init-local-db.sql          # 用本机 MySQL 时建库建账号
 │   └── start-redis.ps1            # Windows 下启动本机 Redis
-├── spring boot_service/           # 后端（Gradle 工程）
+├── backend/                       # 后端（Gradle 工程）
 │   ├── build.gradle / settings.gradle / gradle.properties
 │   ├── gradlew / gradlew.bat / gradle/wrapper/
 │   ├── tools/gen_entities.py      # 从 DDL 反向生成 entity / mapper
@@ -104,15 +152,18 @@ agentic-sss/
 ├── langchain_service/             # AI 服务（FastAPI）
 │   ├── main.py
 │   └── app/{core,api}/
-└── vue/                           # 前端
-    ├── vite.config.js
-    └── src/
-        ├── components/            # Icon / AppLayout / Modal / Drawer / Pager ...
-        │   └── offering/          # 工作台五个页签
-        ├── views/                 # 12 个页面
-        ├── stores/                # session / theme / toast / confirm / tasks
-        ├── api/                   # http 封装 + 59 个接口映射
-        └── styles/main.css        # 设计系统
+├── vue/                           # 前端
+│   ├── vite.config.js
+│   └── src/
+│       ├── components/            # Icon / AppLayout / Modal / Drawer / Pager ...
+│       │   └── offering/          # 工作台五个页签
+│       ├── views/                 # 12 个页面
+│       ├── stores/                # session / theme / toast / confirm / tasks
+│       ├── api/                   # http 封装 + 59 个接口映射
+│       └── styles/main.css        # 设计系统
+├── CONTRIBUTING.md / SECURITY.md / CODE_OF_CONDUCT.md
+├── CHANGELOG.md
+└── LICENSE
 ```
 
 ## 快速开始
@@ -123,7 +174,7 @@ agentic-sss/
 |---|---|
 | JDK | 17 |
 | Gradle | 随仓库自带 Wrapper（9.0.0，无需本机安装） |
-| Node.js / npm | 18+ / 9+ |
+| Node.js / npm | 18+（推荐 20）/ 9+ |
 | Python | 3.12+（仅 AI 服务需要） |
 | MySQL | 8.0+ |
 | Redis | 7.x（**必需**，登录与幂等依赖它） |
@@ -146,8 +197,8 @@ powershell -ExecutionPolicy Bypass -File scripts\start-redis.ps1
 ### 3. 启动后端（:8081）
 
 ```bash
-cd "spring boot_service"
-gradlew.bat bootRun        # Linux / macOS: ./gradlew bootRun
+cd backend
+./gradlew bootRun             # Windows: gradlew.bat bootRun
 ```
 
 首次启动 Flyway 自动建 22 张表并写入演示数据。
@@ -227,11 +278,15 @@ python main.py
 
 ## 用 IDEA 运行
 
-仓库已带 `.idea/runConfigurations/`（共享运行配置）与 UTF-8 编码设置：
+仓库**不提交** `.idea/`（含本机 SDK 名与路径的配置会给其他人添麻烦），clone 后：
 
-1. `File → Open` 选择仓库根目录，等待 Gradle 同步完成（用自带 Wrapper，无需本机装 Gradle）；
-2. 右上角依次运行 `1. 后端 sss-backend (:8081)`、`2. 前端 vue (npm run dev :5173)`、`3. AI 服务 (FastAPI :8000)`；
-3. 若 SDK 名称不一致，在 `Project Structure → Project SDK` 选择本机 JDK 17。
+1. `File → Open` 选择仓库根目录，等待 Gradle 同步 —— IDEA 会自动识别 `backend/` 为 Gradle 工程，用自带 Wrapper；
+2. 若 SDK 名称不一致，在 `Project Structure → Project SDK` 选择本机 JDK 17；
+3. 自己建三个运行配置即可：
+   - 后端：Spring Boot 类型，主类 `org.spring_web.spring_boot_service.SpringBootServiceApplication`，
+     VM 参数 `-Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai`；
+   - 前端：npm 类型，`package.json` 指向 `vue/package.json`，命令 `run dev`；
+   - AI 服务：Shell / Python 类型，解释器用 `langchain_service/.venv`，脚本 `langchain_service/main.py`。
 
 ## 开发约定
 
@@ -244,14 +299,29 @@ python main.py
 - 前端不引入 UI 框架：组件与样式集中在 `src/components` 与 `src/styles/main.css`，新增页面复用既有 class。
 
 ```bash
-cd "spring boot_service" && gradlew.bat build -x test          # 构建后端（Linux/macOS: ./gradlew build -x test）
+cd backend && ./gradlew build -x test                     # 构建后端（Windows: gradlew.bat build -x test）
 cd vue && npm run build                                   # 构建前端
-python "spring boot_service/tools/gen_entities.py"        # 重新生成实体
+python backend/tools/gen_entities.py                      # 重新生成实体
 ```
+
+## 测试与 CI
+
+本地没有单元测试，CI 只验证三个模块能构建/装配：
+
+| Job | 命令 | 说明 |
+|---|---|---|
+| Backend | `./gradlew build -x test --no-daemon` | JDK 17 + Gradle 缓存 |
+| Frontend | `npm ci && npm run build` | Node 20，锁定 `vue/package-lock.json` |
+| AI service | `pip install -r requirements.txt` + 导入检查 | Python 3.12 |
+
+配置见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。接入单元测试后，把后端命令里的 `-x test` 去掉即可纳入 CI。
 
 ## 文档
 
 - [需求文档](docs/需求文档.md)：角色权限、状态机、功能需求与验收标准、创新点、非功能需求；
+- [贡献指南](CONTRIBUTING.md)：目录约定、提交规范、代码约定、安全红线；
+- [安全策略](SECURITY.md)：默认配置风险、漏洞报告方式、已处理攻击面；
+- [更新日志](CHANGELOG.md)：版本变更与后续计划；
 - 本文：运行、配置、接口概览；
 - 运行后访问 Swagger 查看全部 59 个接口的参数与示例。
 
@@ -264,17 +334,33 @@ python "spring boot_service/tools/gen_entities.py"        # 重新生成实体
 | 登录返回 `42901` | 同一用户名或同一 IP 1 分钟内失败过多（用户名 5 次、IP 20 次），等 1 分钟 |
 | 选题返回 `42201 TOPIC_FULL` | 题目名额已被别人抢完，刷新题目列表重选 |
 | 上传后一直 `PARSING` | AI 服务未启动：`cd langchain_service && python main.py`，不启动会在降级后停在解析失败 |
-| `gradlew` 报 JDK 版本错误 | Gradle 9 要求 JDK 17+，`JAVA_HOME` 指到 JDK 17（`D:\a\jdk\jdk17`） |
+| `gradlew` 报 JDK 版本错误 | Gradle 9 要求 JDK 17+，`JAVA_HOME` 指向 JDK 17（例如 `D:\a\jdk\jdk17`） |
+| 前端 404 / 代理打空 | `vue/.env` 的 `VITE_API_TARGET` 与后端端口不一致，改完重启 `npm run dev` |
 
 ## 已知限制
 
 - AI 服务的 5 个 `/internal/ai/**` 接口返回 501 占位；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
 - 报告上传后未抽取 PDF 正文，`reportText` 为空，AI 报告评分为盲评，需接入 PDFBox 或 Python 侧解析。
-- 演示数据与默认口令仅供本地使用。部署到生产前必须：删除或隔离 `V2__seed_demo_data.sql`、替换 `JWT_SECRET` 与 `AI_INTERNAL_TOKEN`、收紧 CORS 白名单、更换全部默认口令、限制 AI 服务网络访问。
+- 演示数据与默认口令仅供本地使用。部署到生产前必须：删除或隔离 `V2__seed_demo_data.sql`、替换 `JWT_SECRET` 与 `AI_INTERNAL_TOKEN`、收紧 CORS 白名单、更换全部默认口令、限制 AI 服务网络访问（详见 [SECURITY.md](SECURITY.md)）。
+
+## 路线图
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| M1–M4 | 认证、教学组织、选题、提交与成绩主链路 | ✅ |
+| M5 | 语音答辩（WebSocket + ASR + AI 出题评分） | 🚧 |
+| M6 | 静态分析调度与问题明细落库 | 🚧 |
+| M7 | 报告正文抽取、对象存储、后端测试接入 CI | 📋 |
+
+详细变更与计划见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 贡献
 
-欢迎提交 Issue 与 Pull Request。提交前请确保 `./gradlew build -x test`（在 `spring boot_service/` 下）与 `npm run build` 均通过（CI 同样会检查）。
+欢迎提交 Issue 与 Pull Request，动手前请先读 [CONTRIBUTING.md](CONTRIBUTING.md) 与
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。提交前请确保 `./gradlew build -x test`（在 `backend/` 下）
+与 `npm run build`（在 `vue/` 下）均通过（CI 同样会检查）。
+
+安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要开公开 Issue。
 
 ## 许可证
 

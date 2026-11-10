@@ -1,0 +1,25 @@
+# https://editorconfig.org
+# 编辑器无关的格式约定，配合 .gitattributes（换行归一化）一起生效。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{java,gradle,py}]
+indent_size = 4
+
+[*.md]
+# Markdown 行尾两个空格是硬换行，不能删
+trim_trailing_whitespace = false
+
+# Windows 启动脚本必须 CRLF，与 .gitattributes 保持一致
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+[*.{jar,png,jpg,jpeg,gif,ico,pdf,xlsx,zip}]
+insert_final_newline = false
