@@ -1,0 +1,109 @@
+# =============================================================================
+# Backend runtime configuration.
+#
+# Every ${VAR:default} default here is mirrored in .env.example, so the
+# application starts with no environment variables at all.
+#
+# Keep in sync when changing anything (see README -> Configuration):
+#   * docker-compose.yml          same variable names and defaults
+#   * vue/.env                    VITE_API_TARGET port == server.port
+#   * langchain_service/.env      AI_INTERNAL_TOKEN == sss.ai.internal-token
+#
+# Spring Boot does not read .env; export the variables yourself
+# (`set -a && source .env && set +a`) or rely on the defaults below.
+# =============================================================================
+
+spring:
+  application:
+    name: sss-backend
+
+  datasource:
+    url: "jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:sss}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false&createDatabaseIfNotExist=true"
+    username: ${DB_USER:sss}
+    password: ${DB_PASSWORD:sss123456}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 10000
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      # Leave empty when the Redis instance has no password
+      password: ${REDIS_PASSWORD:123456}
+      timeout: 3s
+
+  # V1 creates the 22 tables, V2 seeds the demo accounts and topics.
+  # Keep baseline-on-migrate disabled, otherwise V1 is skipped on an empty schema.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
+
+  servlet:
+    multipart:
+      # Must stay above sss.storage.max-source-bytes (100MB), otherwise large
+      # source archives are rejected by the container before validation.
+      max-file-size: 120MB
+      max-request-size: 130MB
+
+  jackson:
+    time-zone: Asia/Shanghai
+
+server:
+  # 8081 by default because 8080 is frequently taken; if you change it,
+  # change vue/.env (VITE_API_TARGET) as well.
+  port: ${SERVER_PORT:8081}
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# Matches the permitAll entries in SecurityConfig
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
+
+sss:
+  jwt:
+    # JwtService requires at least 32 bytes; replace with a random value in production
+    secret: ${JWT_SECRET:change-me-change-me-change-me-change-me}
+    access-token-ttl: 2h
+    refresh-token-ttl: 7d
+
+  ai:
+    # Backend -> Python AI service; path prefix of AiServiceClient is /internal/ai
+    base-url: ${AI_BASE_URL:http://127.0.0.1:8000}
+    internal-token: ${AI_INTERNAL_TOKEN:change-me}
+    connect-timeout: 3s
+    read-timeout: 90s
+
+  storage:
+    # FileStorageService creates this directory at startup (relative to the working dir)
+    local-dir: ${STORAGE_DIR:./data/objects}
+    max-source-bytes: 104857600
+    max-report-bytes: 52428800
+
+  cors:
+    allowed-origins:
+      - http://localhost:${FRONTEND_PORT:5173}
+      - http://127.0.0.1:${FRONTEND_PORT:5173}
+
+logging:
+  level:
+    root: INFO
+    org.spring_web.spring_boot_service: INFO

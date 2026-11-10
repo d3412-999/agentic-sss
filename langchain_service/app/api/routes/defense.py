@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_defense_service, require_internal_token
+from app.api.deps import get_defense_service
 from app.schemas.defense import (
     DefenseEvaluateRequest,
     DefenseEvaluationResponse,
@@ -11,11 +11,7 @@ from app.schemas.defense import (
 )
 from app.services.defense_service import DefenseService
 
-router = APIRouter(
-    prefix="/internal/ai/defense",
-    tags=["答辩"],
-    dependencies=[Depends(require_internal_token)],
-)
+router = APIRouter(prefix="/defense", tags=["答辩"])
 
 
 @router.post("/questions", response_model=DefenseQuestionResponse)

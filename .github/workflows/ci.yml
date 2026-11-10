@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 三个模块互不依赖，并行跑；同一分支的新提交会取消上一次未完成的运行。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Gradle + JDK 17)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 目前没有单元测试；接入测试后去掉 -x test 就能纳入 CI。
+      - name: Build
+        run: ./gradlew build -x test --no-daemon
+
+  frontend:
+    name: Frontend (Vite + Node 20)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vue
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: vue/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  ai-service:
+    name: AI service (FastAPI + Python 3.12)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: langchain_service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: langchain_service/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 不做真实调用：只验证应用能装配起来（配置、路由、鉴权依赖无导入错误）。
+      - name: Import check
+        run: python -c "from app.main import create_app; create_app()"

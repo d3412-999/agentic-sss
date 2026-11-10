@@ -1,17 +1,19 @@
+# ---- Secrets: never commit real credentials ----
+.env
+*.env
+!.env.example
+!**/.env.example
+
 # ---- Java / Gradle ----
-.idea/
-*.iml
 .gradle/
 build/
 out/
-!gradle/wrapper/gradle-wrapper.jar
 *.class
-
-# ---- Node / Vue ----
-node_modules/
-dist/
-.vite/
-npm-debug.log*
+*.jar
+*.war
+# Gradle Wrapper 的 jar 必须入库，否则别人 clone 后没有 wrapper 可用
+!gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 
 # ---- Python ----
 __pycache__/
@@ -19,16 +21,34 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-.env
+.mypy_cache/
+.ruff_cache/
 
-# ---- 运行时与本地数据 ----
+# ---- Node / Vite ----
+node_modules/
+dist/
+.vite/
+*.tmpdir/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Runtime data ----
 data/
 logs/
 *.log
-mysql-data/
-redis-data/
-minio-data/
+*.rdb
+
+# ---- IDE: 不入库 ----
+# clone 后直接用 IDEA 打开仓库根目录、按 backend / vue / langchain_service 三个模块
+# 自己建运行配置即可；IDE 配置带有本机路径与 SDK 名，提交上去只会污染他人环境。
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+!.vscode/extensions.json
 
 # ---- OS ----
-.DS_Store
 Thumbs.db
+.DS_Store

@@ -2,15 +2,11 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_report_service, require_internal_token
+from app.api.deps import get_report_service
 from app.schemas.report import ReportEvaluateRequest, ReportEvaluationResponse
 from app.services.report_service import ReportService
 
-router = APIRouter(
-    prefix="/internal/ai/report",
-    tags=["报告评审"],
-    dependencies=[Depends(require_internal_token)],
-)
+router = APIRouter(prefix="/report", tags=["报告评审"])
 
 
 @router.post("/evaluate", response_model=ReportEvaluationResponse)

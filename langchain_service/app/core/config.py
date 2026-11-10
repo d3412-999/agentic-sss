@@ -1,8 +1,13 @@
-"""服务配置：所有配置项均支持环境变量或 .env 文件覆盖。"""
+"""服务配置：所有配置项均支持环境变量或 .env 文件覆盖。
+
+变量命名与仓库根目录 .env.example 对齐（AI_HOST / AI_PORT / AI_INTERNAL_TOKEN），
+同时兼容旧的 HOST / PORT / INTERNAL_TOKEN 写法。
+"""
 
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,12 +24,16 @@ class Settings(BaseSettings):
     # ---- 基础信息 ----
     app_name: str = "sss-ai-service"
     environment: str = "dev"
-    host: str = "0.0.0.0"
-    port: int = 8000
+    host: str = Field("127.0.0.1", validation_alias=AliasChoices("AI_HOST", "HOST"))
+    port: int = Field(8000, validation_alias=AliasChoices("AI_PORT", "PORT"))
     log_level: str = "INFO"
 
-    # Java 后端调用本服务时携带的内部令牌，对应请求头 X-Internal-Token
-    internal_token: str = "change-me"
+    # Java 后端调用本服务时携带的内部令牌，对应请求头 X-Internal-Token。
+    # 必须与后端 application.yaml 的 sss.ai.internal-token（AI_INTERNAL_TOKEN）一致。
+    internal_token: str = Field(
+        "change-me",
+        validation_alias=AliasChoices("AI_INTERNAL_TOKEN", "INTERNAL_TOKEN"),
+    )
 
     # ---- 大模型 ----
     # openai：调用 OpenAI 兼容接口；mock：返回确定性数据，便于本地联调与测试

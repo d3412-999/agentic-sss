@@ -75,6 +75,44 @@ def extract_identifiers(text: str) -> list[str]:
     return found
 
 
+def split_report_text(text: str, max_sections: int = 30, chunk_size: int = 4000) -> list["ReportSection"]:
+    """把一整段报告正文切分成章节。
+
+    优先按「第 X 章 / 一、 / 1.1」等标题切分；识别不到标题时按固定长度切块，
+    保证 Java 后端只传 reportText 时也能进入正常的报告评审流程。
+    """
+    from app.schemas.materials import ReportSection
+
+    content = (text or "").strip()
+    if not content:
+        return []
+
+    heading_pattern = re.compile(
+        r"^\s*(?:#{1,6}\s*)?(?:第[一二三四五六七八九十百\d]+[章节部分]|[一二三四五六七八九十]+[、.]|\d+(?:\.\d+)*[、.\s])",
+        re.MULTILINE,
+    )
+    matches = list(heading_pattern.finditer(content))
+
+    sections: list[ReportSection] = []
+    if len(matches) >= 2:
+        for index, match in enumerate(matches[:max_sections]):
+            start = match.start()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+            block = content[start:end].strip()
+            if not block:
+                continue
+            title = block.splitlines()[0][:80]
+            sections.append(ReportSection(title=title, content=block))
+        return sections
+
+    for index in range(0, len(content), chunk_size):
+        chunk = content[index : index + chunk_size]
+        sections.append(ReportSection(title=f"报告正文（第 {index // chunk_size + 1} 段）", content=chunk))
+        if len(sections) >= max_sections:
+            break
+    return sections
+
+
 def unique_preserve_order(items: Iterable[str]) -> list[str]:
     """去重并保持原顺序。"""
     result: list[str] = []

@@ -2,15 +2,11 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_consistency_service, require_internal_token
+from app.api.deps import get_consistency_service
 from app.schemas.consistency import ConsistencyRequest, ConsistencyResponse
 from app.services.consistency_service import ConsistencyService
 
-router = APIRouter(
-    prefix="/internal/ai",
-    tags=["一致性检查"],
-    dependencies=[Depends(require_internal_token)],
-)
+router = APIRouter(tags=["一致性检查"])
 
 
 @router.post("/consistency", response_model=ConsistencyResponse)

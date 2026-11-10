@@ -1,4 +1,0 @@
-logging:
-  level:
-    org.spring_web.spring_boot_service: DEBUG
-    org.spring_web.spring_boot_service.mapper: DEBUG

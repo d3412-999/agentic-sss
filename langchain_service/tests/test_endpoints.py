@@ -147,3 +147,37 @@ def test_check_consistency() -> None:
     missing = [issue for issue in data["issues"] if "GhostDao" in issue["message"]]
     assert missing, "应发现 GhostDao 不存在的问题"
     assert data["method"] == "local-rag"
+
+
+def test_review_code_accepts_backend_payload() -> None:
+    """兼容 Java 后端 AiServiceClient 的 codeSnippet 简化入参。"""
+    payload = {
+        "submissionId": "s1",
+        "selectionId": "sel-1",
+        "topicTitle": "图书管理系统",
+        "buildTool": "MAVEN",
+        "codeSnippet": "public class BookService { public void borrow() {} }",
+        "reportText": "",
+    }
+    response = client.post("/internal/ai/code/review", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()
+    assert 0 <= data["score"] <= 100
+    assert data["dimensions"][0]["key"] == "DESIGN"
+    assert data["model"]
+
+
+def test_evaluate_report_accepts_backend_payload() -> None:
+    """兼容 Java 后端 AiServiceClient 的 reportText 简化入参。"""
+    payload = {
+        "submissionId": "s1",
+        "topicTitle": "图书管理系统",
+        "reportText": "第1章 需求分析\n系统需要支持借阅与归还。\n第2章 系统设计\n采用分层架构。",
+        "codeSnippet": "",
+    }
+    response = client.post("/internal/ai/report/evaluate", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()
+    assert 0 <= data["score"] <= 100
+    assert len(data["dimensions"]) == 6
+    assert data["model"]

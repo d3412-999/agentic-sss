@@ -2,15 +2,11 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import get_code_service, require_internal_token
+from app.api.deps import get_code_service
 from app.schemas.code import CodeReviewRequest, CodeReviewResponse
 from app.services.code_service import CodeReviewService
 
-router = APIRouter(
-    prefix="/internal/ai/code",
-    tags=["源码评审"],
-    dependencies=[Depends(require_internal_token)],
-)
+router = APIRouter(prefix="/code", tags=["源码评审"])
 
 
 @router.post("/review", response_model=CodeReviewResponse)

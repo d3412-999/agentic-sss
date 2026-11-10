@@ -1,8 +1,9 @@
-"""FastAPI 依赖：内部令牌校验与服务单例。"""
+"""FastAPI 依赖：业务服务单例。
+
+内部令牌校验见 app/core/security.py，由路由聚合层统一挂载。
+"""
 
 from functools import lru_cache
-
-from fastapi import Header, HTTPException, status
 
 from app.core.config import get_settings
 from app.rag.lightrag_client import LightRagClient
@@ -12,16 +13,6 @@ from app.services.consistency_service import ConsistencyService
 from app.services.defense_service import DefenseService
 from app.services.llm_service import LlmService
 from app.services.report_service import ReportService
-
-
-async def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
-    """校验 Java 后端传入的内部令牌；健康检查不经过此依赖。"""
-    settings = get_settings()
-    if x_internal_token != settings.internal_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="内部令牌无效",
-        )
 
 
 @lru_cache

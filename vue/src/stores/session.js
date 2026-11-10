@@ -1,43 +1,69 @@
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 
+// 与后端 AuthDtos.TokenResponse / MeVO 对应。
+// 文件名与路径来自 AuthDtos.java 注释里约定的「前端 stores/session.js」。
 const STORAGE_KEY = 'sss.session'
 
-function restore() {
+function readStorage() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    return JSON.parse(raw)
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
   } catch {
-    return null
+    return {}
   }
 }
 
-const saved = restore()
+const saved = readStorage()
 
-export const session = reactive({
-  authenticated: Boolean(saved?.authenticated),
-  role: saved?.role || 'student',
-  name: saved?.name || '',
-  account: saved?.account || ''
+const state = reactive({
+  accessToken: saved.accessToken || '',
+  refreshToken: saved.refreshToken || '',
+  user: saved.user || null,
+  me: saved.me || null,
 })
 
-export const demoAccounts = {
-  student: { name: '张三', account: '2023010101', label: '学生演示账号' },
-  teacher: { name: '李文博', account: 'T2019008', label: '教师演示账号' }
+function persist() {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      accessToken: state.accessToken,
+      refreshToken: state.refreshToken,
+      user: state.user,
+      me: state.me,
+    }),
+  )
 }
 
-export function signIn(role) {
-  const account = demoAccounts[role] || demoAccounts.student
-  session.authenticated = true
-  session.role = role
-  session.name = account.name
-  session.account = account.account
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+export const session = state
+export const isAuthenticated = computed(() => Boolean(state.accessToken))
+
+/** 登录成功：后端字段名是 accessToken，不是 token。 */
+export function saveLogin(data) {
+  state.accessToken = data.accessToken || ''
+  state.refreshToken = data.refreshToken || ''
+  state.user = data.user || null
+  persist()
 }
 
-export function signOut() {
-  session.authenticated = false
-  session.name = ''
-  session.account = ''
+/** refresh 成功后只换令牌，保留 user。 */
+export function saveTokens(data) {
+  state.accessToken = data.accessToken || ''
+  state.refreshToken = data.refreshToken || state.refreshToken
+  if (data.user) state.user = data.user
+  persist()
+}
+
+export function setMe(me) {
+  state.me = me
+  persist()
+}
+
+export function clearSession() {
+  state.accessToken = ''
+  state.refreshToken = ''
+  state.user = null
+  state.me = null
   localStorage.removeItem(STORAGE_KEY)
 }
+
+export const displayName = computed(() => state.user?.name || state.me?.name || '未登录')
+export const currentRole = computed(() => state.user?.role || state.me?.role || '')
