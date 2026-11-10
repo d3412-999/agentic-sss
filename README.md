@@ -4,8 +4,8 @@
 
 Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工作台前端 + 独立部署的 FastAPI AI 服务。
 
-<!-- 部署到 GitHub 后把 OWNER/REPO 换成实际地址，并放开下面这行 CI 徽章 -->
-<!-- [![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml) -->
+<!-- 部署到 GitHub 后把 d3412-999/agentic-sss 换成实际地址，并放开下面这行 CI 徽章 -->
+[![CI](https://github.com/d3412-999/agentic-sss/actions/workflows/ci.yml/badge.svg)](https://github.com/d3412-999/agentic-sss/actions/workflows/ci.yml)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/17/)

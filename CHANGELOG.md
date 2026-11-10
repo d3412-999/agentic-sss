@@ -32,5 +32,5 @@
 - **工程化**：Gradle Wrapper、Flyway 迁移（22 张表）、Docker Compose 本地 MySQL + Redis、
   GitHub Actions 三模块构建、Swagger UI、统一响应体与错误码。
 
-[Unreleased]: https://github.com/OWNER/REPO/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/REPO/releases/tag/v0.1.0
+[Unreleased]: https://github.com/d3412-999/agentic-sss/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/d3412-999/agentic-sss/releases/tag/v0.1.0

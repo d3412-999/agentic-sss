@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         感谢反馈。请先确认你已经读过 README 的「常见问题」一节，并搜索过现有 Issue。
-        > 安全漏洞请不要开公开 Issue，请按 [SECURITY.md](https://github.com/OWNER/REPO/blob/main/SECURITY.md) 私下报告。
+        > 安全漏洞请不要开公开 Issue，请按 [SECURITY.md](https://github.com/d3412-999/agentic-sss/blob/main/SECURITY.md) 私下报告。
 
   - type: dropdown
     id: module
