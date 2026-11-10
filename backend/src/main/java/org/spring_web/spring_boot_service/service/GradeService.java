@@ -450,7 +450,8 @@ public class GradeService {
     }
 
     private void writeItems(Offering offering, Grade grade, List<Selection> selections, BigDecimal defense) {
-        gradeItemMapper.delete(new LambdaQueryWrapper<GradeItem>().eq(GradeItem::getGradeId, grade.getId()));
+        // 必须物理删除：逻辑删除的旧行仍会占用 (grade_id, selection_id) 唯一键
+        gradeItemMapper.deletePhysicallyByGradeId(grade.getId());
         Map<String, Integer> snapshot = new LinkedHashMap<>();
         snapshot.put("defense", offering.getWeightDefense());
         snapshot.put("code", offering.getWeightCode());
