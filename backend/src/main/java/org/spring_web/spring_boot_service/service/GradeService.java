@@ -216,10 +216,21 @@ public class GradeService {
     @Transactional(rollbackFor = Exception.class)
     public GradeDtos.GradePublishResult publish(String offeringId, GradeDtos.GradePublishRequest request) {
         Long oid = BizAssert.id(offeringId, "offeringId");
-        offeringService.ownedOffering(offeringId);
+        Offering offering = offeringService.ownedOffering(offeringId);
         List<Long> targets = request.gradeIds() == null ? List.of()
                 : request.gradeIds().stream().map(id -> BizAssert.id(id, "gradeId")).toList();
         List<Grade> grades = gradeMapper.selectList(new LambdaQueryWrapper<Grade>()
+                .eq(Grade::getOfferingId, oid)
+                .in(!targets.isEmpty(), Grade::getId, targets));
+
+        // 发布前用最新的 AI 评审结果重算，避免“重新评审完成，但发布出去的还是旧分”。
+        // 已调整（ADJUSTED）的成绩在 computeForStudent 内会保留；已发布（LOCKED）的跳过。
+        for (Grade grade : grades) {
+            if (!"LOCKED".equals(grade.getStatus())) {
+                computeForStudent(offering, grade.getStudentId(), false);
+            }
+        }
+        grades = gradeMapper.selectList(new LambdaQueryWrapper<Grade>()
                 .eq(Grade::getOfferingId, oid)
                 .in(!targets.isEmpty(), Grade::getId, targets));
 

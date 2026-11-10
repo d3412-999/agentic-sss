@@ -79,7 +79,7 @@ async function recalc() {
 async function publish() {
   if (!(await confirm({
     title: '发布成绩',
-    message: '发布后学生可见且成绩被锁定。允许跳过缺失分项的学生，并发送站内通知。',
+    message: '发布前会按最新答辩 / 源码 / 报告结果重新计算（人工调整的成绩保留），发布后学生可见且成绩锁定。允许跳过缺失分项的学生，并发送站内通知。',
     confirmText: '确认发布',
   }))) return
   busy.value = 'publish'
