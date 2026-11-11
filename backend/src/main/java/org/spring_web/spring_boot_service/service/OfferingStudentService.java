@@ -4,12 +4,15 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.BizAssert;
+import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.common.PageResult;
 import org.spring_web.spring_boot_service.common.Times;
 import org.spring_web.spring_boot_service.dto.OfferingDtos;
@@ -23,6 +26,7 @@ import org.spring_web.spring_boot_service.mapper.OfferingStudentMapper;
 import org.spring_web.spring_boot_service.mapper.SelectionMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionMapper;
 import org.spring_web.spring_boot_service.mapper.SysUserMapper;
+import org.spring_web.spring_boot_service.mapper.TopicExtraMapper;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +45,7 @@ public class OfferingStudentService {
     private final SysUserMapper userMapper;
     private final OfferingStudentMapper rosterMapper;
     private final SelectionMapper selectionMapper;
+    private final TopicExtraMapper topicExtraMapper;
     private final SubmissionMapper submissionMapper;
     private final GradeMapper gradeMapper;
     private final OfferingService offeringService;
@@ -126,6 +131,8 @@ public class OfferingStudentService {
         patch.setPasswordHash(passwordEncoder.encode(password));
         patch.setMustChangePassword(1);
         userMapper.updateById(patch);
+        // 教师重置密码也必须让该生已登录的会话失效，否则旧令牌还能继续用
+        userMapper.bumpTokenVersion(uid);
         auditLog.record("STUDENT_RESET_PASSWORD", "USER", uid, null, null, "教师重置初始密码");
         return new OfferingDtos.ResetPasswordVO(password, true);
     }
@@ -174,8 +181,28 @@ public class OfferingStudentService {
                             && (grades == null || grades == 0),
                     "该生已有提交物或成绩，不能从名单移除");
         }
+
+        // 移出名单必须同步取消该生在本开课的有效选题：否则记录还是 SELECTED，
+        // 题目名额被永久占用（别人选不上），而该生已不在名单里也无法自己退选。
+        List<Long> canceled = new ArrayList<>();
+        for (Selection selection : selections) {
+            if ("CANCELED".equals(selection.getStatus())) {
+                continue;
+            }
+            selection.setStatus("CANCELED");
+            selection.setCanceledAt(Times.now());
+            selection.setUpdatedAt(Times.now());
+            if (selectionMapper.updateById(selection) == 0) {
+                // 乐观锁冲突：并发下该选题状态已变，整体回滚让教师刷新后重试
+                throw new BizException(ErrorCode.CONFLICT, "选题状态已变更，请刷新后重试");
+            }
+            topicExtraMapper.releaseOne(selection.getTopicId());
+            canceled.add(selection.getId());
+        }
+
         rosterMapper.deleteById(relation.getId());
-        auditLog.record("STUDENT_REMOVE", "OFFERING", oid, null, null, null);
+        auditLog.record("STUDENT_REMOVE", "OFFERING", oid, null,
+                Map.of("canceledSelectionCount", canceled.size()), null);
     }
 
     private void assertInRoster(Long offeringId, Long studentId) {

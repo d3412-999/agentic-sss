@@ -9,6 +9,7 @@ import org.spring_web.spring_boot_service.common.Result;
 import org.spring_web.spring_boot_service.dto.CommonDtos;
 import org.spring_web.spring_boot_service.entity.FileObject;
 import org.spring_web.spring_boot_service.security.SecurityUtils;
+import org.spring_web.spring_boot_service.service.FileAccessService;
 import org.spring_web.spring_boot_service.service.FileStorageService;
 import org.spring_web.spring_boot_service.service.SubmissionService;
 import org.springframework.core.io.FileSystemResource;
@@ -36,6 +37,7 @@ public class SubmissionController {
 
     private final SubmissionService submissionService;
     private final FileStorageService fileStorage;
+    private final FileAccessService fileAccessService;
 
     @PostMapping("/api/v1/student/selections/{selectionId}/source")
     public ResponseEntity<Result<CommonDtos.UploadResultVO>> uploadSource(
@@ -98,12 +100,15 @@ public class SubmissionController {
     @GetMapping("/api/v1/files/{fileId}/download")
     public ResponseEntity<Resource> downloadFile(@PathVariable String fileId) {
         FileObject file = fileStorage.load(fileId);
-        // 文件归属校验：只允许上传者本人或教师下载；导出文件由发起人取回
+        // 文件归属校验：上传者本人 / 教师 / 题目附件所属开课的名单内学生，三种之一即可下载
         boolean owner = file.getCreatedBy() != null
                 && file.getCreatedBy().equals(SecurityUtils.userId());
         var current = SecurityUtils.current().orElse(null);
         boolean privileged = current != null && current.isTeacher();
-        if (!owner && !privileged) {
+        // 题目附件由教师上传、名单内学生下载：单凭「上传者或教师」会让学生的下载链接 403
+        boolean topicAttachment = current != null
+                && fileAccessService.canAccessTopicAttachment(file.getId(), current.id());
+        if (!owner && !privileged && !topicAttachment) {
             throw new org.spring_web.spring_boot_service.common.BizException(
                     org.spring_web.spring_boot_service.common.ErrorCode.FORBIDDEN, "无权下载该文件");
         }

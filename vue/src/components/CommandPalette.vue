@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Icon from './Icon.vue'
+import { navItemsForRole } from '../config/nav'
 import { session, currentRole, clearSession } from '../stores/session'
 import { nextThemeMode, theme, themeName, toggleTheme } from '../stores/theme'
 import { api } from '../api/endpoints'
@@ -15,21 +16,10 @@ const query = ref('')
 const active = ref(0)
 const inputRef = ref(null)
 
-const NAV = [
-  { to: '/', label: '概览', icon: 'home', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-  { to: '/offerings', label: '教学班', icon: 'book', roles: ['TEACHER'] },
-  { to: '/courses', label: '我的课程', icon: 'book', roles: ['STUDENT'] },
-  { to: '/selections', label: '我的选题', icon: 'target', roles: ['STUDENT'] },
-  { to: '/grades', label: '成绩', icon: 'chart', roles: ['TEACHER', 'STUDENT'] },
-  { to: '/tasks', label: '任务中心', icon: 'clock', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-  { to: '/notifications', label: '站内通知', icon: 'bell', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-  { to: '/settings', label: '设置', icon: 'gear', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-]
-
 const actions = computed(() => {
-  const list = NAV.filter((n) => n.roles.includes(currentRole.value)).map((n) => ({
+  const list = navItemsForRole(currentRole.value).map((n) => ({
     id: `go:${n.to}`,
-    label: `前往 ${n.label}`,
+    label: `前往 ${n.paletteLabel || n.label}`,
     hint: n.to,
     icon: n.icon,
     run: () => router.push(n.to),

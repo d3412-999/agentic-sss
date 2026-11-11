@@ -9,10 +9,16 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 /**
- * Redis 中的令牌状态：刷新令牌一次性轮换、访问令牌黑名单、用户令牌版本。
+ * Redis 中的令牌状态：刷新令牌一次性轮换、访问令牌黑名单。
  *
  * <p>轮换必须用 Lua 保证「读 + 删」原子：否则两个并发刷新请求都能读到同一个
  * refreshToken，都拿到新令牌，就破坏了一次性语义。这是本项目最容易被忽略的并发点。</p>
+ *
+ * <p><b>用户令牌版本不在这里</b>：{@code ver} 存在 MySQL {@code sys_user.token_version}。
+ * Redis 是易失存储，被 flush / 换实例 / 从旧快照恢复都会让版本号归零，届时改密码与
+ * 强制下线就形同虚设；版本号必须跟用户数据同生共死。本类只保留可容忍丢失的状态：
+ * 刷新令牌丢失最多让用户重新登录；黑名单丢失最坏是已登出的 accessToken 在剩余有效期
+ * 内仍可用，而密码变更由 DB 版本号兜底。</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -26,27 +32,12 @@ public class RefreshTokenStore {
 
     private final StringRedisTemplate redis;
 
-    private String versionKey(long uid) {
-        return "sss:token:version:" + uid;
-    }
-
     private String refreshKey(String jti) {
         return "sss:token:refresh:" + jti;
     }
 
     private String blacklistKey(String jti) {
         return "sss:token:blacklist:" + jti;
-    }
-
-    public long tokenVersion(long uid) {
-        String value = redis.opsForValue().get(versionKey(uid));
-        return value == null ? 0L : Long.parseLong(value);
-    }
-
-    /** 改密码 / 强制下线：递增版本，令所有旧令牌失效。 */
-    public long bumpTokenVersion(long uid) {
-        Long value = redis.opsForValue().increment(versionKey(uid));
-        return value == null ? 1L : value;
     }
 
     public void saveRefresh(String jti, long uid, Duration ttl) {

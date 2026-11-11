@@ -1,24 +1,31 @@
 package org.spring_web.spring_boot_service.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.CsvUtil;
 import org.spring_web.spring_boot_service.common.ErrorCode;
+import org.spring_web.spring_boot_service.common.GradeMath;
 import org.spring_web.spring_boot_service.common.PageResult;
 import org.spring_web.spring_boot_service.common.Times;
 import org.spring_web.spring_boot_service.config.AsyncConfig;
+import org.spring_web.spring_boot_service.config.SssProperties;
 import org.spring_web.spring_boot_service.dto.CommonDtos;
 import org.spring_web.spring_boot_service.dto.GradeDtos;
 import org.spring_web.spring_boot_service.dto.OfferingDtos;
@@ -94,6 +101,7 @@ public class GradeService {
     private final NotificationService notificationService;
     private final FileStorageService fileStorage;
     private final JsonCodec json;
+    private final SssProperties properties;
 
     // ---------------------------------------------------------------- 教师端查询
 
@@ -120,8 +128,13 @@ public class GradeService {
                         .eq(StringUtils.hasText(status) && !"all".equals(status),
                                 Grade::getStatus, status)
                         .orderByDesc(Grade::getId));
+        // 列表页一次性批量取学生与选题数，避免逐行 selectById / selectCount 的 N+1。
+        List<Long> studentIds = result.getRecords().stream()
+                .map(Grade::getStudentId).filter(Objects::nonNull).distinct().toList();
+        Map<Long, SysUser> students = studentMap(studentIds);
+        Map<Long, Long> selectionCounts = selectionCountMap(oid, studentIds);
         List<GradeDtos.GradeListItemVO> list = result.getRecords().stream()
-                .map(this::listItemVo)
+                .map(grade -> listItemVo(grade, students, selectionCounts))
                 .toList();
         return PageResult.of(list, result.getTotal(), page, size);
     }
@@ -169,23 +182,30 @@ public class GradeService {
         BizAssert.state(!"LOCKED".equals(grade.getStatus()), "成绩已发布，请先撤销发布");
         BizAssert.state(request.version().equals(grade.getVersion()), "成绩已被他人修改，请刷新后重试");
         String reason = request.reason() == null ? "" : request.reason().trim();
-        BizAssert.param(reason.length() >= 5, "调整原因至少 5 个字");
+        // 最短字数由配置驱动（sss.limits.grade-adjust-reason-min-length），不再写死 5
+        int minReasonLength = properties.getLimits().getGradeAdjustReasonMinLength();
+        BizAssert.param(reason.length() >= minReasonLength, "调整原因至少 " + minReasonLength + " 个字");
         Offering offering = BizAssert.found(offeringMapper.selectById(grade.getOfferingId()), "开课");
 
         GradeDtos.GradeDetailVO before = detail(String.valueOf(grade.getId()));
-        BigDecimal defense = request.defenseScore() != null ? request.defenseScore()
-                : nz(grade.getDefenseScore());
-        BigDecimal code = request.codeScore() != null ? request.codeScore() : nz(grade.getCodeScore());
-        BigDecimal report = request.reportScore() != null ? request.reportScore() : nz(grade.getReportScore());
+        BigDecimal defense = GradeMath.nz(request.defenseScore() != null ? request.defenseScore()
+                : grade.getDefenseScore());
+        BigDecimal code = GradeMath.nz(request.codeScore() != null ? request.codeScore()
+                : grade.getCodeScore());
+        BigDecimal report = GradeMath.nz(request.reportScore() != null ? request.reportScore()
+                : grade.getReportScore());
+        // 人工改分拒绝越界入参；随后入库前再做一次夹取，保证 DB 里永远是 0~100
         validateScore(defense);
         validateScore(code);
         validateScore(report);
 
-        grade.setDefenseScore(defense);
-        grade.setCodeScore(code);
-        grade.setReportScore(report);
-        grade.setFinalScore(weighted(offering, defense, code, report));
-        grade.setLevel(level(grade.getFinalScore()));
+        grade.setDefenseScore(GradeMath.clamp(defense, BigDecimal.ZERO, HUNDRED));
+        grade.setCodeScore(GradeMath.clamp(code, BigDecimal.ZERO, HUNDRED));
+        grade.setReportScore(GradeMath.clamp(report, BigDecimal.ZERO, HUNDRED));
+        BigDecimal finalScore = GradeMath.clamp(weighted(offering, defense, code, report),
+                BigDecimal.ZERO, HUNDRED);
+        grade.setFinalScore(finalScore);
+        grade.setLevel(GradeMath.level(finalScore));
         grade.setStatus("ADJUSTED");
         grade.setAdjusted(1);
         grade.setVersion(request.version());
@@ -303,7 +323,21 @@ public class GradeService {
                 .eq(oid != null, Grade::getOfferingId, oid)
                 .eq(Grade::getStatus, "LOCKED")
                 .isNotNull(Grade::getPublishedAt));
-        List<GradeDtos.StudentGradeVO> list = grades.stream().map(this::studentVo).toList();
+        // 批量取开课 / 课程 / 分项成绩，避免每个成绩 3 条查询的 N+1。
+        List<Long> offeringIds = grades.stream().map(Grade::getOfferingId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, Offering> offerings = offeringIds.isEmpty() ? Map.of()
+                : offeringMapper.selectBatchIds(offeringIds).stream()
+                        .collect(Collectors.toMap(Offering::getId, Function.identity()));
+        List<Long> courseIds = offerings.values().stream().map(Offering::getCourseId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, Course> courses = courseIds.isEmpty() ? Map.of()
+                : courseMapper.selectBatchIds(courseIds).stream()
+                        .collect(Collectors.toMap(Course::getId, Function.identity()));
+        Map<Long, List<GradeItem>> items = gradeItemMap(
+                grades.stream().map(Grade::getId).filter(Objects::nonNull).toList());
+        List<GradeDtos.StudentGradeVO> list = grades.stream()
+                .map(grade -> studentVo(grade, offerings, courses, items)).toList();
         return PageResult.of(list, list.size(), 1, Math.max(1, list.size()));
     }
 
@@ -369,24 +403,27 @@ public class GradeService {
             Course course = offering == null ? null : courseMapper.selectById(offering.getCourseId());
             StringBuilder csv = new StringBuilder();
             csv.append('\ufeff').append("学号,姓名,班级,选题数,答辩分,源码分,报告分,总评,等级,教师评语,发布时间\n");
-            for (Grade grade : gradeMapper.selectList(new LambdaQueryWrapper<Grade>()
-                    .eq(Grade::getOfferingId, offeringId))) {
-                SysUser student = sysUserMapper.selectById(grade.getStudentId());
-                Long topicCount = selectionMapper.selectCount(new LambdaQueryWrapper<Selection>()
-                        .eq(Selection::getOfferingId, offeringId)
-                        .eq(Selection::getStudentId, grade.getStudentId())
-                        .ne(Selection::getStatus, "CANCELED"));
-                csv.append(field(student == null ? "" : student.getStudentNo())).append(',')
-                        .append(field(student == null ? "" : student.getName())).append(',')
-                        .append(field(student == null ? "" : student.getClassName())).append(',')
-                        .append(topicCount == null ? 0 : topicCount).append(',')
-                        .append(grade.getDefenseScore()).append(',')
-                        .append(grade.getCodeScore()).append(',')
-                        .append(grade.getReportScore()).append(',')
-                        .append(grade.getFinalScore()).append(',')
-                        .append(field(grade.getLevel())).append(',')
-                        .append(field(grade.getTeacherComment())).append(',')
-                        .append(grade.getPublishedAt()).append('\n');
+            List<Grade> grades = gradeMapper.selectList(new LambdaQueryWrapper<Grade>()
+                    .eq(Grade::getOfferingId, offeringId));
+            // 导出同样批量取学生与选题数；成绩单可能有几百行，逐行查询会拖慢异步任务
+            List<Long> studentIds = grades.stream().map(Grade::getStudentId)
+                    .filter(Objects::nonNull).distinct().toList();
+            Map<Long, SysUser> students = studentMap(studentIds);
+            Map<Long, Long> selectionCounts = selectionCountMap(offeringId, studentIds);
+            for (Grade grade : grades) {
+                SysUser student = students.get(grade.getStudentId());
+                Long topicCount = selectionCounts.get(grade.getStudentId());
+                csv.append(CsvUtil.field(student == null ? "" : student.getStudentNo())).append(',')
+                        .append(CsvUtil.field(student == null ? "" : student.getName())).append(',')
+                        .append(CsvUtil.field(student == null ? "" : student.getClassName())).append(',')
+                        .append(CsvUtil.field(topicCount == null ? 0L : topicCount)).append(',')
+                        .append(CsvUtil.field(grade.getDefenseScore())).append(',')
+                        .append(CsvUtil.field(grade.getCodeScore())).append(',')
+                        .append(CsvUtil.field(grade.getReportScore())).append(',')
+                        .append(CsvUtil.field(grade.getFinalScore())).append(',')
+                        .append(CsvUtil.field(grade.getLevel())).append(',')
+                        .append(CsvUtil.field(grade.getTeacherComment())).append(',')
+                        .append(CsvUtil.field(grade.getPublishedAt())).append('\n');
             }
             String name = (course == null ? "课程设计" : course.getName()) + "_成绩单.csv";
             FileObject file = fileStorage.storeBytes(name, csv.toString().getBytes(StandardCharsets.UTF_8),
@@ -421,10 +458,11 @@ public class GradeService {
                 .eq(Selection::getOfferingId, offering.getId())
                 .eq(Selection::getStudentId, studentId)
                 .ne(Selection::getStatus, "CANCELED"));
-        BigDecimal defense = defenseScore(offering.getId(), studentId);
-        BigDecimal code = averageScore(selections, "SOURCE");
-        BigDecimal report = averageScore(selections, "REPORT");
-        BigDecimal finalScore = weighted(offering, defense, code, report);
+        // 分项分入库前统一夹到 0~100，防止 AI / 人工数据源越界污染总评
+        BigDecimal defense = clampScore(defenseScore(offering.getId(), studentId));
+        BigDecimal code = clampScore(averageScore(selections, "SOURCE"));
+        BigDecimal report = clampScore(averageScore(selections, "REPORT"));
+        BigDecimal finalScore = clampScore(weighted(offering, defense, code, report));
 
         if (grade == null) {
             grade = new Grade();
@@ -439,7 +477,7 @@ public class GradeService {
         grade.setCodeScore(code);
         grade.setReportScore(report);
         grade.setFinalScore(finalScore);
-        grade.setLevel(level(finalScore));
+        grade.setLevel(GradeMath.level(finalScore));
         grade.setUpdatedAt(Times.now());
         if (grade.getId() == null) {
             gradeMapper.insert(grade);
@@ -458,16 +496,16 @@ public class GradeService {
         snapshot.put("report", offering.getWeightReport());
         for (Selection selection : selections) {
             Topic topic = topicMapper.selectById(selection.getTopicId());
-            BigDecimal code = averageScore(List.of(selection), "SOURCE");
-            BigDecimal report = averageScore(List.of(selection), "REPORT");
+            BigDecimal code = clampScore(averageScore(List.of(selection), "SOURCE"));
+            BigDecimal report = clampScore(averageScore(List.of(selection), "REPORT"));
             GradeItem item = new GradeItem();
             item.setGradeId(grade.getId());
             item.setSelectionId(selection.getId());
             item.setTopicTitle(topic == null ? "" : topic.getTitle());
             item.setCodeScore(code);
             item.setReportScore(report);
-            item.setDefenseScore(defense);
-            item.setFinalScore(weighted(offering, defense, code, report));
+            item.setDefenseScore(clampScore(defense));
+            item.setFinalScore(clampScore(weighted(offering, defense, code, report)));
             item.setWeights(json.write(snapshot));
             item.setCreatedAt(Times.now());
             item.setUpdatedAt(Times.now());
@@ -490,11 +528,7 @@ public class GradeService {
                 scores.add(score);
             }
         }
-        if (scores.isEmpty()) {
-            return BigDecimal.ZERO.setScale(1);
-        }
-        return scores.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(scores.size()), 1, RoundingMode.HALF_UP);
+        return GradeMath.average(scores);
     }
 
     private BigDecimal analysisScore(Long submissionId) {
@@ -519,38 +553,23 @@ public class GradeService {
                 ? BigDecimal.ZERO.setScale(1) : session.getScore();
     }
 
+    /** 权重折算统一走 {@link GradeMath#weighted}，本类只保留「开课 → 三个权重」的适配。 */
     private BigDecimal weighted(Offering offering, BigDecimal defense,
                                 BigDecimal code, BigDecimal report) {
-        return defense.multiply(BigDecimal.valueOf(offering.getWeightDefense()))
-                .add(code.multiply(BigDecimal.valueOf(offering.getWeightCode())))
-                .add(report.multiply(BigDecimal.valueOf(offering.getWeightReport())))
-                .divide(HUNDRED, 1, RoundingMode.HALF_UP);
+        return GradeMath.weighted(offering.getWeightDefense(), offering.getWeightCode(),
+                offering.getWeightReport(), defense, code, report);
     }
 
-    private String level(BigDecimal score) {
-        if (score.compareTo(BigDecimal.valueOf(90)) >= 0) {
-            return "优秀";
-        }
-        if (score.compareTo(BigDecimal.valueOf(80)) >= 0) {
-            return "良好";
-        }
-        if (score.compareTo(BigDecimal.valueOf(70)) >= 0) {
-            return "中等";
-        }
-        if (score.compareTo(BigDecimal.valueOf(60)) >= 0) {
-            return "及格";
-        }
-        return "不及格";
-    }
-
+    /** 人工改分只接受 0~100 的显式分数：越界属于客户端错误，直接拒绝而不是静默夹取。 */
     private void validateScore(BigDecimal score) {
-        BizAssert.param(score != null && score.compareTo(BigDecimal.ZERO) >= 0
-                        && score.compareTo(HUNDRED) <= 0,
+        BizAssert.param(score != null
+                        && score.compareTo(GradeMath.clamp(score, BigDecimal.ZERO, HUNDRED)) == 0,
                 "分数需在 0~100 之间");
     }
 
-    private BigDecimal nz(BigDecimal value) {
-        return value == null ? BigDecimal.ZERO.setScale(1) : value;
+    /** 分项分 / 总评入库前的防御性夹取。 */
+    private BigDecimal clampScore(BigDecimal score) {
+        return GradeMath.clamp(score, BigDecimal.ZERO, HUNDRED);
     }
 
     private OfferingDtos.Weights weights(Offering offering) {
@@ -565,12 +584,10 @@ public class GradeService {
         return grade;
     }
 
-    private GradeDtos.GradeListItemVO listItemVo(Grade grade) {
-        SysUser student = sysUserMapper.selectById(grade.getStudentId());
-        Long topicCount = selectionMapper.selectCount(new LambdaQueryWrapper<Selection>()
-                .eq(Selection::getOfferingId, grade.getOfferingId())
-                .eq(Selection::getStudentId, grade.getStudentId())
-                .ne(Selection::getStatus, "CANCELED"));
+    private GradeDtos.GradeListItemVO listItemVo(Grade grade, Map<Long, SysUser> students,
+                                                 Map<Long, Long> selectionCounts) {
+        SysUser student = students.get(grade.getStudentId());
+        Long topicCount = selectionCounts.get(grade.getStudentId());
         return new GradeDtos.GradeListItemVO(String.valueOf(grade.getId()),
                 String.valueOf(grade.getStudentId()),
                 student == null ? "" : student.getStudentNo(),
@@ -583,26 +600,80 @@ public class GradeService {
                 Times.offset(grade.getUpdatedAt()));
     }
 
-    private GradeDtos.StudentGradeVO studentVo(Grade grade) {
-        Offering offering = offeringMapper.selectById(grade.getOfferingId());
-        Course course = offering == null ? null : courseMapper.selectById(offering.getCourseId());
-        List<GradeItem> items = gradeItemMapper.selectList(new LambdaQueryWrapper<GradeItem>()
-                .eq(GradeItem::getGradeId, grade.getId()));
+    private GradeDtos.StudentGradeVO studentVo(Grade grade, Map<Long, Offering> offerings,
+                                               Map<Long, Course> courses,
+                                               Map<Long, List<GradeItem>> items) {
+        Offering offering = offerings.get(grade.getOfferingId());
+        Course course = offering == null ? null : courses.get(offering.getCourseId());
+        List<GradeItem> gradeItems = items.getOrDefault(grade.getId(), List.of());
         return new GradeDtos.StudentGradeVO(String.valueOf(grade.getId()),
                 course == null ? "" : course.getName(), offering == null ? "" : offering.getSemester(),
                 grade.getFinalScore(), grade.getLevel(), offering == null ? null : weights(offering),
                 grade.getDefenseScore(), grade.getCodeScore(), grade.getReportScore(),
-                items.stream().map(i -> new GradeDtos.StudentGradeItemVO(i.getTopicTitle(),
+                gradeItems.stream().map(i -> new GradeDtos.StudentGradeItemVO(i.getTopicTitle(),
                         i.getCodeScore(), i.getReportScore(), i.getDefenseScore(), i.getFinalScore())).toList(),
                 grade.getTeacherComment(), Times.offset(grade.getPublishedAt()));
     }
 
-    /** CSV 单元格：转义引号，并对可能触发表格公式的开头补单引号。 */
-    private String field(String value) {
-        String safe = value == null ? "" : value.replace("\"", "\"\"");
-        if (safe.startsWith("=") || safe.startsWith("+") || safe.startsWith("-") || safe.startsWith("@")) {
-            safe = "'" + safe;
+    // ---------------------------------------------------------------- 批量查询（消除 N+1）
+
+    /** 批量取学生；调用方负责传入去重后的 id，缺失的学生不会出现在 Map 里。 */
+    private Map<Long, SysUser> studentMap(List<Long> studentIds) {
+        if (studentIds == null || studentIds.isEmpty()) {
+            return Map.of();
         }
-        return "\"" + safe + "\"";
+        return sysUserMapper.selectBatchIds(studentIds).stream()
+                .collect(Collectors.toMap(SysUser::getId, Function.identity()));
+    }
+
+    /**
+     * 一次分组查询得到「学生 → 该开课下有效选题数」。
+     *
+     * <p>按 offering_id 过滤是因为调用方都是单开课场景（成绩列表 / 成绩单导出），
+     * 这样查询能命中 idx_selection_offering，且不必把整表选题拉进内存。</p>
+     */
+    private Map<Long, Long> selectionCountMap(Long offeringId, List<Long> studentIds) {
+        if (offeringId == null || studentIds == null || studentIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Map<String, Object>> rows = selectionMapper.selectMaps(new QueryWrapper<Selection>()
+                .select("student_id", "count(*) AS c")
+                .eq("offering_id", offeringId)
+                .in("student_id", studentIds)
+                .ne("status", "CANCELED")
+                .groupBy("student_id"));
+        return indexGroupedCount(rows, "student_id");
+    }
+
+    /** 一次查出本页成绩的全部分项明细，再按 gradeId 分组。 */
+    private Map<Long, List<GradeItem>> gradeItemMap(List<Long> gradeIds) {
+        if (gradeIds == null || gradeIds.isEmpty()) {
+            return Map.of();
+        }
+        return gradeItemMapper.selectList(new LambdaQueryWrapper<GradeItem>()
+                        .in(GradeItem::getGradeId, gradeIds)).stream()
+                .collect(Collectors.groupingBy(GradeItem::getGradeId));
+    }
+
+    /** 分组 count 结果 → Map<分组键, 计数>；列名大小写在 MySQL / H2 下可能不同。 */
+    private Map<Long, Long> indexGroupedCount(List<Map<String, Object>> rows, String keyColumn) {
+        Map<Long, Long> result = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long key = groupedLong(row, keyColumn);
+            if (key != null) {
+                Long value = groupedLong(row, "c");
+                result.put(key, value == null ? 0L : value);
+            }
+        }
+        return result;
+    }
+
+    private Long groupedLong(Map<String, Object> row, String column) {
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (column.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue() instanceof Number number ? number.longValue() : null;
+            }
+        }
+        return null;
     }
 }

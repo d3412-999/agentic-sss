@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Drawer from '../components/Drawer.vue'
-import { api, reasonText } from '../api/endpoints'
+import { api, reasonText, DIFFICULTY_LABEL } from '../api/endpoints'
 import { confirm } from '../stores/confirm'
 import { toast, toastError } from '../stores/toast'
 
@@ -28,9 +28,7 @@ const submitting = ref(false)
 
 const DIFFICULTIES = [
   { key: '', label: '全部难度' },
-  { key: 'EASY', label: '入门' },
-  { key: 'MEDIUM', label: '进阶' },
-  { key: 'HARD', label: '挑战' },
+  ...['EASY', 'MEDIUM', 'HARD'].map((key) => ({ key, label: DIFFICULTY_LABEL[key] })),
 ]
 
 const limit = computed(() => offering.value?.topicSelectLimit ?? 3)
@@ -184,7 +182,7 @@ onMounted(async () => {
       >
         <div class="card__body" style="display: flex; flex-direction: column; height: 100%">
           <div class="row" style="align-items: flex-start">
-            <span class="tag">{{ { EASY: '入门', MEDIUM: '进阶', HARD: '挑战' }[t.difficulty] || t.difficulty || '不限' }}</span>
+            <span class="tag">{{ DIFFICULTY_LABEL[t.difficulty] || t.difficulty || '不限' }}</span>
             <span v-if="t.selectedByMe" class="pill pill--ok" style="margin-left: auto">已选</span>
             <span
               v-else
@@ -280,7 +278,7 @@ onMounted(async () => {
     <Drawer v-if="detailOpen" :title="detail?.title || '题目详情'" wide @close="detailOpen = false">
       <div v-if="detail" style="display: grid; gap: 16px">
         <div class="row row--wrap">
-          <span class="tag">{{ { EASY: '入门', MEDIUM: '进阶', HARD: '挑战' }[detail.difficulty] || detail.difficulty }}</span>
+          <span class="tag">{{ DIFFICULTY_LABEL[detail.difficulty] || detail.difficulty }}</span>
           <span class="pill" :class="detail.remaining ? 'pill--ok' : 'pill--danger'">剩余 {{ detail.remaining }} / {{ detail.maxSelectCount }}</span>
           <span v-if="detail.selectedByMe" class="pill pill--brand">你已经选了这道题</span>
         </div>

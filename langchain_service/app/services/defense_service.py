@@ -27,10 +27,12 @@ from app.services.llm_service import LlmService
 from app.services.mock_responses import mock_defense_evaluation, mock_defense_questions
 from app.services.scoring import (
     DEFENSE_DIMENSION_SPECS,
+    clamp_score,
     grade_of,
     normalize_dimensions,
     weighted_total,
 )
+from app.utils.prompt_guard import append_warning, detect_injection
 from app.utils.text_utils import clip_report_material, clip_source_material
 
 
@@ -92,6 +94,9 @@ class DefenseService:
         if not request.questions:
             raise AiServiceError("答辩题目不能为空", status_code=400, code="INVALID_REQUEST")
 
+        # 检测转写稿中的评审操纵语句，仅用于在 summary 末尾追加一行提示
+        detections = detect_injection("\n".join(item.text for item in request.transcript))
+
         system_prompt = EVALUATION_SYSTEM_PROMPT
         user_prompt = build_evaluation_prompt(request)
         result = await self._llm.generate_json(
@@ -112,7 +117,7 @@ class DefenseService:
             question_scores.append(
                 QuestionScore(
                     question_id=question.id,
-                    score=max(0.0, min(100.0, round(item.score, 1))) if item else 0.0,
+                    score=clamp_score(item.score) if item else 0.0,
                     comment=item.comment if item else "未给出评分",
                 )
             )
@@ -128,7 +133,7 @@ class DefenseService:
             defense_id=request.defense_id,
             score=score,
             grade=grade_of(score),
-            summary=draft.summary,
+            summary=append_warning(draft.summary, detections),
             dimensions=dimensions,
             question_scores=question_scores,
             flags=flags,

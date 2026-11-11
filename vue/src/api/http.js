@@ -26,23 +26,49 @@ async function parseBody(res) {
   }
 }
 
-async function tryRefresh() {
-  if (!session.refreshToken) return false
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ refreshToken: session.refreshToken }),
-    })
-    const payload = await parseBody(res)
-    if (res.ok && payload?.code === 0 && payload.data?.accessToken) {
-      saveTokens(payload.data)
-      return true
+/**
+ * 401 刷新是「单飞」（single-flight）：并发的多个 401 请求共用同一个刷新 Promise，
+ * 只发一次 POST /auth/refresh，避免 N 个请求同时拿旧 refreshToken 去续期。
+ * - 成功：等待者各自用新令牌重试一次自己的请求（request 的 _retried 守卫）。
+ * - 失败：清空会话并广播一次 sss:unauthorized，等待者仍按原 401 抛 ApiError。
+ */
+let refreshInFlight = null
+
+function notifyUnauthorized() {
+  // 只有确实带着令牌时才登出，避免登录前后台轮询的竞态把用户踢下线。
+  // clearSession 会把 accessToken 置空，所以同一轮会话里最多广播一次。
+  if (!session.accessToken) return
+  clearSession()
+  window.dispatchEvent(new CustomEvent('sss:unauthorized'))
+}
+
+function tryRefresh() {
+  if (refreshInFlight) return refreshInFlight
+  if (!session.refreshToken) return Promise.resolve(false)
+
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      })
+      const payload = await parseBody(res)
+      if (res.ok && payload?.code === 0 && payload.data?.accessToken) {
+        saveTokens(payload.data)
+        return true
+      }
+    } catch {
+      // 网络中断同样按刷新失败处理
     }
-  } catch {
-    // 刷新失败按未登录处理
-  }
-  return false
+    // 清会话 + 广播由共享 Promise 完成一次，所有等待者只拿到 false。
+    notifyUnauthorized()
+    return false
+  })().finally(() => {
+    refreshInFlight = null
+  })
+
+  return refreshInFlight
 }
 
 function buildHeaders({ auth = true, idempotencyKey, body, headers = {} }) {
@@ -86,12 +112,8 @@ export async function request(path, options = {}) {
   }
 
   if (res.status === 401 && auth) {
-    // 只有确实带了令牌才认为会话失效；没有令牌的 401 交给调用方处理，
-    // 避免后台轮询在登录前的竞态把用户踢下线。
-    if (session.accessToken) {
-      clearSession()
-      window.dispatchEvent(new CustomEvent('sss:unauthorized'))
-    }
+    // 刷新失败或重试后仍 401：统一走 notifyUnauthorized（幂等，只广播一次）。
+    notifyUnauthorized()
   }
 
   if (!res.ok) {
@@ -159,7 +181,14 @@ export async function download(path, filename = '') {
     credentials: 'same-origin',
   })
   if (!res.ok) {
-    throw new ApiError(`下载失败 HTTP ${res.status}`, res.status, res.status)
+    // 与 request() 的 ApiError 对齐：把响应头里的 X-Trace-Id 一并带出去，便于排查。
+    const traceId = res.headers.get('X-Trace-Id') || ''
+    throw new ApiError(
+      traceId ? `下载失败 HTTP ${res.status}（traceId: ${traceId}）` : `下载失败 HTTP ${res.status}`,
+      res.status,
+      res.status,
+      traceId,
+    )
   }
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)

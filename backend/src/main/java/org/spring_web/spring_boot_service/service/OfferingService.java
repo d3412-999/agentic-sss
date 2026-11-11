@@ -1,14 +1,17 @@
 package org.spring_web.spring_boot_service.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
@@ -24,6 +27,7 @@ import org.spring_web.spring_boot_service.entity.OfferingStudent;
 import org.spring_web.spring_boot_service.entity.Selection;
 import org.spring_web.spring_boot_service.entity.Submission;
 import org.spring_web.spring_boot_service.entity.SysUser;
+import org.spring_web.spring_boot_service.entity.Topic;
 import org.spring_web.spring_boot_service.mapper.CourseMapper;
 import org.spring_web.spring_boot_service.mapper.GradeMapper;
 import org.spring_web.spring_boot_service.mapper.OfferingMapper;
@@ -46,6 +50,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class OfferingService {
+
+    /** 列表 / 详情统一使用的空统计，避免 Map.get 返回 null 后再判空。 */
+    private static final OfferingDtos.Stats EMPTY_STATS = new OfferingDtos.Stats(0, 0, 0, 0);
 
     private final CourseMapper courseMapper;
     private final OfferingMapper offeringMapper;
@@ -101,8 +108,13 @@ public class OfferingService {
                         .eq(StringUtils.hasText(status), Offering::getStatus, status)
                         .like(StringUtils.hasText(keyword), Offering::getClassName, keyword)
                         .orderByDesc(Offering::getId));
-        List<OfferingDtos.OfferingListItemVO> list = result.getRecords().stream()
-                .map(this::listItemVo).toList();
+        // 列表页一次性批量统计四个计数，避免每行 4 条 selectCount 的 N+1
+        List<Offering> records = result.getRecords();
+        Map<Long, OfferingDtos.Stats> statsByOffering = stats(
+                records.stream().map(Offering::getId).toList());
+        List<OfferingDtos.OfferingListItemVO> list = records.stream()
+                .map(o -> listItemVo(o, statsByOffering.getOrDefault(o.getId(), EMPTY_STATS)))
+                .toList();
         return PageResult.of(list, result.getTotal(), page, size);
     }
 
@@ -243,9 +255,9 @@ public class OfferingService {
         if (students == null || students == 0) {
             blockers.add(new OfferingDtos.Blocker("NO_STUDENT", "尚未导入学生名单"));
         }
-        Long topics = topicMapper.selectCount(new LambdaQueryWrapper<org.spring_web.spring_boot_service.entity.Topic>()
-                .eq(org.spring_web.spring_boot_service.entity.Topic::getOfferingId, offering.getId())
-                .eq(org.spring_web.spring_boot_service.entity.Topic::getStatus, "PUBLISHED"));
+        Long topics = topicMapper.selectCount(new LambdaQueryWrapper<Topic>()
+                .eq(Topic::getOfferingId, offering.getId())
+                .eq(Topic::getStatus, "PUBLISHED"));
         if (topics == null || topics == 0) {
             blockers.add(new OfferingDtos.Blocker("NO_TOPIC", "尚未发布任何题目"));
         }
@@ -312,8 +324,13 @@ public class OfferingService {
             reportSubmitted = count(submissionMapper.selectCount(new LambdaQueryWrapper<Submission>()
                     .in(Submission::getSelectionId, ids).eq(Submission::getType, "REPORT")));
         }
-        double submissionRate = studentCount == 0 ? 0
-                : round((double) (sourceSubmitted + reportSubmitted) / (studentCount * 2) * 100);
+        // 应交材料数 = 有效选题数 × 2（每个选题一份源码 + 一份报告）。
+        // 旧实现用「学生数 × 2」：学生可限选多题、也可退选，多选时提交率永远到不了 100%，
+        // 退选后又会虚高，所以分母必须跟着真实选题数走。
+        long submittedMaterials = sourceSubmitted + reportSubmitted;
+        long expectedMaterials = selectionCount * 2;
+        double submissionRate = expectedMaterials == 0 ? 0
+                : round(Math.min(100, (double) submittedMaterials * 100 / expectedMaterials));
 
         List<Grade> grades = gradeMapper.selectList(new LambdaQueryWrapper<Grade>()
                 .eq(Grade::getOfferingId, offering.getId()));
@@ -488,16 +505,11 @@ public class OfferingService {
     }
 
     private OfferingDtos.OfferingVO toVo(Offering o) {
+        return toVo(o, stats(List.of(o.getId())).getOrDefault(o.getId(), EMPTY_STATS));
+    }
+
+    private OfferingDtos.OfferingVO toVo(Offering o, OfferingDtos.Stats stats) {
         Course course = courseMapper.selectById(o.getCourseId());
-        long studentCount = count(offeringStudentMapper.selectCount(new LambdaQueryWrapper<OfferingStudent>()
-                .eq(OfferingStudent::getOfferingId, o.getId())));
-        long topicCount = count(topicMapper.selectCount(
-                new LambdaQueryWrapper<org.spring_web.spring_boot_service.entity.Topic>()
-                        .eq(org.spring_web.spring_boot_service.entity.Topic::getOfferingId, o.getId())));
-        long selectionCount = count(selectionMapper.selectCount(new LambdaQueryWrapper<Selection>()
-                .eq(Selection::getOfferingId, o.getId()).ne(Selection::getStatus, "CANCELED")));
-        long defenseFinished = count(gradeMapper.selectCount(new LambdaQueryWrapper<Grade>()
-                .eq(Grade::getOfferingId, o.getId()).isNotNull(Grade::getDefenseScore)));
         return new OfferingDtos.OfferingVO(String.valueOf(o.getId()), String.valueOf(o.getCourseId()),
                 course == null ? "" : course.getName(), o.getSemester(), o.getClassName(),
                 o.getDescription(), o.getStatus(), o.getTopicSelectLimit(),
@@ -507,15 +519,74 @@ public class OfferingService {
                         o.getLanguage(), Integer.valueOf(1).equals(o.getEnableVideo())),
                 new OfferingDtos.Timeline(date(o.getSelectStart()), date(o.getSelectEnd()),
                         date(o.getSubmitDeadline()), date(o.getDefenseStart()), date(o.getDefenseEnd())),
-                Times.offset(o.getPublishedAt()), o.getVersion(),
-                new OfferingDtos.Stats(studentCount, topicCount, selectionCount, defenseFinished));
+                Times.offset(o.getPublishedAt()), o.getVersion(), stats);
     }
 
-    private OfferingDtos.OfferingListItemVO listItemVo(Offering o) {
-        OfferingDtos.OfferingVO vo = toVo(o);
+    private OfferingDtos.OfferingListItemVO listItemVo(Offering o, OfferingDtos.Stats stats) {
+        OfferingDtos.OfferingVO vo = toVo(o, stats);
         return new OfferingDtos.OfferingListItemVO(vo.id(), vo.courseName(), vo.semester(),
                 vo.className(), vo.status(), vo.stats().studentCount(), vo.stats().topicCount(),
                 vo.stats().selectionCount(), vo.stats().defenseFinishedCount(), Times.offset(o.getCreatedAt()));
+    }
+
+    /** 四个计数各用一条分组查询批量取回：学生数 / 题目数 / 有效选题数 / 已完成答辩数。 */
+    private Map<Long, OfferingDtos.Stats> stats(List<Long> offeringIds) {
+        List<Long> ids = offeringIds == null ? List.of()
+                : offeringIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Long> students = indexGroupedCount(offeringStudentMapper.selectMaps(
+                new QueryWrapper<OfferingStudent>()
+                        .select("offering_id", "count(*) AS c")
+                        .in("offering_id", ids)
+                        .groupBy("offering_id")), "offering_id");
+        Map<Long, Long> topics = indexGroupedCount(topicMapper.selectMaps(
+                new QueryWrapper<Topic>()
+                        .select("offering_id", "count(*) AS c")
+                        .in("offering_id", ids)
+                        .groupBy("offering_id")), "offering_id");
+        Map<Long, Long> selections = indexGroupedCount(selectionMapper.selectMaps(
+                new QueryWrapper<Selection>()
+                        .select("offering_id", "count(*) AS c")
+                        .in("offering_id", ids)
+                        .ne("status", "CANCELED")
+                        .groupBy("offering_id")), "offering_id");
+        Map<Long, Long> defenseFinished = indexGroupedCount(gradeMapper.selectMaps(
+                new QueryWrapper<Grade>()
+                        .select("offering_id", "count(*) AS c")
+                        .in("offering_id", ids)
+                        .isNotNull("defense_score")
+                        .groupBy("offering_id")), "offering_id");
+        Map<Long, OfferingDtos.Stats> result = new HashMap<>();
+        for (Long id : ids) {
+            result.put(id, new OfferingDtos.Stats(students.getOrDefault(id, 0L),
+                    topics.getOrDefault(id, 0L), selections.getOrDefault(id, 0L),
+                    defenseFinished.getOrDefault(id, 0L)));
+        }
+        return result;
+    }
+
+    /** 分组 count 结果 → Map<分组键, 计数>；列名大小写在 MySQL / H2 下可能不同。 */
+    private Map<Long, Long> indexGroupedCount(List<Map<String, Object>> rows, String keyColumn) {
+        Map<Long, Long> result = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long key = groupedLong(row, keyColumn);
+            if (key != null) {
+                Long value = groupedLong(row, "c");
+                result.put(key, value == null ? 0L : value);
+            }
+        }
+        return result;
+    }
+
+    private Long groupedLong(Map<String, Object> row, String column) {
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (column.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue() instanceof Number number ? number.longValue() : null;
+            }
+        }
+        return null;
     }
 
     private LocalDate date(java.time.LocalDateTime value) {

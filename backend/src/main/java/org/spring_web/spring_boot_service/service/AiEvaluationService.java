@@ -2,21 +2,17 @@ package org.spring_web.spring_boot_service.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.spring_web.spring_boot_service.client.AiServiceClient;
+import org.spring_web.spring_boot_service.common.ArchiveGuard;
 import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.ScoreGuard;
 import org.spring_web.spring_boot_service.common.Times;
 import org.spring_web.spring_boot_service.config.AsyncConfig;
 import org.spring_web.spring_boot_service.entity.CodeAnalysis;
@@ -48,8 +44,6 @@ import org.springframework.stereotype.Service;
 @Slf4j
 @RequiredArgsConstructor
 public class AiEvaluationService {
-
-    private static final int MAX_SNIPPET_CHARS = 30_000;
 
     private final SubmissionMapper submissionMapper;
     private final SubmissionVersionMapper versionMapper;
@@ -166,7 +160,12 @@ public class AiEvaluationService {
                     fail(taskId, submission, version, "AI 返回缺少 score 字段", source);
                     return;
                 }
-                succeed(taskId, submission, version, response, score, source);
+                if (!ScoreGuard.inRange(score)) {
+                    fail(taskId, submission, version,
+                            "AI 返回的分数不在 0~100 区间：" + response.get("score"), source);
+                    return;
+                }
+                succeed(taskId, submission, version, response, ScoreGuard.oneDecimal(score), source);
             } catch (BizException ex) {
                 fail(taskId, submission, version, ex.getMessage(), source);
             }
@@ -299,65 +298,28 @@ public class AiEvaluationService {
         }
     }
 
+    /**
+     * 解析 AI 返回的分数：兼容数字与字符串，去掉首尾空白。
+     *
+     * <p>缺失 / 非数字返回 null，由调用方按「AI 返回缺少 score 字段」失败；
+     * 数值是否落在 0~100 由调用方用 {@link ScoreGuard#inRange(BigDecimal)} 判定，
+     * 越界分数会显式失败，既不会被夹到合法区间，也不会落成 SUCCEEDED。</p>
+     */
     private BigDecimal score(Map<String, Object> response) {
-        Object raw = response.get("score");
-        if (raw == null) {
-            return null;
-        }
-        try {
-            return new BigDecimal(raw.toString()).setScale(1, RoundingMode.HALF_UP);
-        } catch (NumberFormatException ex) {
-            return null;
-        }
+        return ScoreGuard.parse(response.get("score"));
     }
 
-    /** 只读遍历 zip：统计 Java 文件与代码行、识别构建方式、截取代码片段给 AI。 */
+    /** 只读遍历 zip（复用 ArchiveGuard，与上传校验同一套规则）：统计 Java 文件与代码行、识别构建方式、截取代码片段给 AI。 */
     private ZipStats inspectZip(Path path) throws IOException {
-        int javaFiles = 0;
-        int totalFiles = 0;
-        long codeLines = 0;
-        String buildTool = "PLAIN";
-        StringBuilder snippet = new StringBuilder();
-        try (ZipInputStream zip = new ZipInputStream(Files.newInputStream(path))) {
-            ZipEntry entry;
-            byte[] buffer = new byte[8192];
-            while ((entry = zip.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    continue;
-                }
-                totalFiles++;
-                String name = entry.getName().toLowerCase(Locale.ROOT);
-                if (name.endsWith("pom.xml")) {
-                    buildTool = "MAVEN";
-                } else if (name.endsWith("build.gradle") || name.endsWith("build.gradle.kts")) {
-                    buildTool = "GRADLE";
-                }
-                if (name.endsWith(".java")) {
-                    javaFiles++;
-                    StringBuilder content = new StringBuilder();
-                    int read;
-                    while ((read = zip.read(buffer)) != -1) {
-                        for (int i = 0; i < read; i++) {
-                            if (buffer[i] == '\n') {
-                                codeLines++;
-                            }
-                        }
-                        if (content.length() < MAX_SNIPPET_CHARS) {
-                            content.append(new String(buffer, 0,
-                                    Math.min(read, MAX_SNIPPET_CHARS - content.length()),
-                                    java.nio.charset.StandardCharsets.UTF_8));
-                        }
-                    }
-                    if (snippet.length() < MAX_SNIPPET_CHARS) {
-                        snippet.append("// ").append(entry.getName()).append('\n')
-                                .append(content, 0, Math.min(content.length(),
-                                        MAX_SNIPPET_CHARS - snippet.length())).append('\n');
-                    }
-                }
-            }
+        ArchiveGuard.Scan scan;
+        try {
+            scan = ArchiveGuard.scan(path, ArchiveGuard.Limits.defaults());
+        } catch (ArchiveGuard.Violation violation) {
+            // 扫描阶段失败（Zip Slip / 压缩炸弹等）本质上是坏包，转成 IOException 交给上层按解析失败降级
+            throw new IOException("源码包校验失败：" + violation.message(), violation);
         }
-        return new ZipStats(javaFiles, totalFiles, (int) Math.min(codeLines, Integer.MAX_VALUE),
-                buildTool, snippet.toString());
+        return new ZipStats(scan.javaFiles(), scan.totalFiles(), scan.codeLines(),
+                scan.buildTool(), scan.snippet());
     }
 
     private record ZipStats(int javaFiles, int totalFiles, int codeLines,

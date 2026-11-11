@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.Times;
 import org.spring_web.spring_boot_service.entity.AuditLog;
 import org.spring_web.spring_boot_service.mapper.AuditLogMapper;
+import org.spring_web.spring_boot_service.security.ClientIpResolver;
 import org.spring_web.spring_boot_service.security.LoginUser;
 import org.spring_web.spring_boot_service.security.SecurityUtils;
 import org.springframework.stereotype.Service;
@@ -23,6 +24,7 @@ public class AuditLogService {
 
     private final AuditLogMapper auditLogMapper;
     private final JsonCodec json;
+    private final ClientIpResolver clientIpResolver;
 
     public void record(String action, String targetType, Long targetId,
                        Object before, Object after, String reason) {
@@ -37,7 +39,7 @@ public class AuditLogService {
         log.setAfterJson(json.write(after));
         log.setReason(reason);
         HttpServletRequest request = currentRequest();
-        log.setIp(request == null ? null : clientIp(request));
+        log.setIp(request == null ? null : clientIpResolver.resolve(request));
         log.setUserAgent(request == null ? null : request.getHeader("User-Agent"));
         log.setCreatedAt(Times.now());
         auditLogMapper.insert(log);
@@ -48,13 +50,5 @@ public class AuditLogService {
             return attributes.getRequest();
         }
         return null;
-    }
-
-    private String clientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 }

@@ -6,6 +6,7 @@ import CommandPalette from './CommandPalette.vue'
 import ToastHost from './ToastHost.vue'
 import ConfirmHost from './ConfirmHost.vue'
 import { api, ROLE_LABEL } from '../api/endpoints'
+import { navGroupsForRole } from '../config/nav'
 import { session, currentRole, clearSession, setMe } from '../stores/session'
 import { nextThemeMode, theme, themeName, toggleTheme } from '../stores/theme'
 import { activeCount, resumeTracking } from '../stores/tasks'
@@ -20,23 +21,6 @@ const userMenu = ref(false)
 const unread = ref(0)
 let timer = null
 
-const NAV = [
-  { group: '工作台', items: [
-    { to: '/', label: '概览', icon: 'home', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-    { to: '/offerings', label: '教学班', icon: 'book', roles: ['TEACHER'] },
-    { to: '/courses', label: '我的课程', icon: 'book', roles: ['STUDENT'] },
-    { to: '/selections', label: '我的选题', icon: 'target', roles: ['STUDENT'] },
-    { to: '/grades', label: '成绩中心', icon: 'chart', roles: ['TEACHER', 'STUDENT'] },
-  ] },
-  { group: '协作', items: [
-    { to: '/tasks', label: '任务中心', icon: 'clock', roles: ['TEACHER', 'STUDENT', 'ADMIN'], badge: 'tasks' },
-    { to: '/notifications', label: '站内通知', icon: 'bell', roles: ['TEACHER', 'STUDENT', 'ADMIN'], badge: 'unread' },
-  ] },
-  { group: '个人', items: [
-    { to: '/settings', label: '设置', icon: 'gear', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-  ] },
-]
-
 const role = computed(() => currentRole.value)
 const roleText = computed(() => ROLE_LABEL[role.value] || role.value || '—')
 const user = computed(() => session.user || session.me || {})
@@ -44,11 +28,7 @@ const displayName = computed(() => user.value.name || user.value.username || '�
 const initial = computed(() => (displayName.value || 'S').slice(0, 1).toUpperCase())
 const title = computed(() => route.meta.title || '概览')
 
-const navGroups = computed(() =>
-  NAV.map((g) => ({ ...g, items: g.items.filter((i) => i.roles.includes(role.value)) })).filter(
-    (g) => g.items.length,
-  ),
-)
+const navGroups = computed(() => navGroupsForRole(role.value))
 
 function isActive(to) {
   if (to === '/') return route.path === '/'

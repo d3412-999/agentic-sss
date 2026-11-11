@@ -98,6 +98,13 @@ sss:
     max-source-bytes: 104857600
     max-report-bytes: 52428800
 
+  security:
+    # Trust X-Forwarded-For ONLY when the direct peer matches one of these
+    # reverse-proxy IPs / IPv4 CIDRs (comma separated).
+    # Empty default = never trust the header, so a client-supplied XFF is
+    # ignored and the login rate limit / audit log use the direct peer address.
+    trusted-proxies: ${TRUSTED_PROXIES:}
+
   cors:
     allowed-origins:
       - http://localhost:${FRONTEND_PORT:5173}

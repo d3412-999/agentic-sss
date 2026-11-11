@@ -44,7 +44,7 @@ import org.springframework.util.StringUtils;
  *   <li>账号不存在与密码错误返回同一个 40102，不泄露账号是否存在；</li>
  *   <li>role 入参被忽略，角色永远取自 DB；</li>
  *   <li>刷新令牌用 Redis Lua 原子消费，杜绝并发重放；</li>
- *   <li>改密码递增 tokenVersion，所有已签发令牌立即失效。</li>
+ *   <li>改密码递增 MySQL 中的 tokenVersion，所有已签发令牌立即失效（Redis flush 也不失效）。</li>
  * </ol>
  */
 @Service
@@ -105,7 +105,8 @@ public class AuthService {
 
     private AuthDtos.TokenResponse issue(SysUser user) {
         LoginUser principal = LoginUser.from(user);
-        long version = tokenStore.tokenVersion(user.getId());
+        // 版本号以 DB 为准：Redis flush 后旧版本号不会“复活”
+        long version = versionOf(user);
         String jti = UUID.randomUUID().toString();
         String refreshToken = jwtService.issueRefresh(principal, version, jti);
         tokenStore.saveRefresh(jti, user.getId(),
@@ -113,6 +114,11 @@ public class AuthService {
         String accessToken = jwtService.issueAccess(principal, version);
         return new AuthDtos.TokenResponse(accessToken, refreshToken, "Bearer",
                 jwtService.accessExpiresInSeconds(), toUserVo(user));
+    }
+
+    /** 令牌版本缺失时按 0 处理，兼容 V4 迁移前的历史行。 */
+    private static long versionOf(SysUser user) {
+        return user.getTokenVersion() == null ? 0L : user.getTokenVersion();
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -140,12 +146,13 @@ public class AuthService {
         if (owner.isEmpty() || !owner.get().equals(uid)) {
             throw new BizException(ErrorCode.UNAUTHORIZED, "刷新令牌已被使用，请重新登录");
         }
-        if (version != tokenStore.tokenVersion(uid)) {
-            throw new BizException(ErrorCode.UNAUTHORIZED, "登录状态已变更，请重新登录");
-        }
+        // 令牌版本以 DB 为准（不再读 Redis），先从 DB 载入用户再比较
         SysUser user = BizAssert.found(userMapper.selectById(uid), "用户");
         if (!"ACTIVE".equals(user.getStatus())) {
             throw new BizException(ErrorCode.ACCOUNT_DISABLED);
+        }
+        if (version != versionOf(user)) {
+            throw new BizException(ErrorCode.UNAUTHORIZED, "登录状态已变更，请重新登录");
         }
         return issue(user);
     }
@@ -233,7 +240,8 @@ public class AuthService {
         patch.setMustChangePassword(0);
         userMapper.updateById(patch);
 
-        tokenStore.bumpTokenVersion(stored.getId());
+        // 令牌版本存 DB：改密码后所有已签发令牌（access + refresh）立即失效
+        userMapper.bumpTokenVersion(stored.getId());
         auditLog.record("PASSWORD_CHANGE", "USER", stored.getId(), null, null, "用户自助修改密码");
     }
 

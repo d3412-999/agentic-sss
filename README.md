@@ -302,22 +302,30 @@ python main.py
 - 前端不引入 UI 框架：组件与样式集中在 `src/components` 与 `src/styles/main.css`，新增页面复用既有 class。
 
 ```bash
-cd backend && ./gradlew build -x test                     # 构建后端（Windows: gradlew.bat build -x test）
+cd backend && ./gradlew build                             # 构建后端（含 src/test 纯逻辑单测）
 cd vue && npm run build                                   # 构建前端
+cd langchain_service && python -m pytest -q               # AI 服务测试（mock 模式）
 python backend/tools/gen_entities.py                      # 重新生成实体
 ```
 
 ## 测试与 CI
 
-本地没有单元测试，CI 只验证三个模块能构建/装配：
+三端都有自动化测试，CI 会真实执行：
 
 | Job | 命令 | 说明 |
 |---|---|---|
-| Backend | `./gradlew build -x test --no-daemon` | JDK 17 + Gradle 缓存 |
+| Backend | `./gradlew build --no-daemon` | JDK 17 + Gradle 缓存；执行 `src/test/java/.../common` 下的纯逻辑单测 |
 | Frontend | `npm ci && npm run build` | Node 20，锁定 `vue/package-lock.json` |
-| AI service | `pip install -r requirements.txt` + 导入检查 | Python 3.12 |
+| AI service | `pip install -r requirements.txt` + `python -m pytest -q` | Python 3.12，mock provider 跑接口冒烟测试，之后再做一次导入检查 |
 
-配置见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。接入单元测试后，把后端命令里的 `-x test` 去掉即可纳入 CI。
+- 后端单测集中在 `common` 包：压缩包安全校验（`ArchiveGuard`）、AI 分数校验（`ScoreGuard`）、
+  成绩数学（`GradeMath`）、CSV 单元格（`CsvUtil`）、可信代理 IP 解析（`TrustedProxyIp`）——
+  这些类刻意只依赖 `java.*`，因此可以脱离 Spring 容器直接测试；
+- AI 服务测试位于 `langchain_service/tests`（29 个用例），`LLM_PROVIDER=mock` 时无需网络与 Key；
+- 并发选题、乐观锁、幂等等依赖真实 MySQL/Redis 的回归测试尚未落地，计划用 Testcontainers 补齐。
+
+配置见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
+
 
 ## 文档
 
@@ -344,6 +352,9 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 
 - AI 服务的 5 个 `/internal/ai/**` 接口已实现（默认 mock 模式可联调）；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
 - 报告正文已用 PDFBox（PDF）/ Apache POI（DOCX）抽取；扫描版 PDF 若没有文本层，仍会退回“无正文”，需要 OCR 才能评分。
+- AI 评审已做提示注入防护（不可信材料包装 + 操纵话术检测）与 0~100 分数区间校验，但检测是启发式的，不能保证穷尽新措辞；最终分数仍由教师复核发布。
+- 前端令牌存放在 sessionStorage（按标签页隔离、关闭即清除），同源 XSS 仍可读取；根治需要后端 HttpOnly Cookie。
+- 默认口令与占位密钥未做启动期 fail-fast，部署到生产前必须手工替换（见 SECURITY.md）。
 - 演示数据与默认口令仅供本地使用。部署到生产前必须：删除或隔离 `V2__seed_demo_data.sql`、替换 `JWT_SECRET` 与 `AI_INTERNAL_TOKEN`、收紧 CORS 白名单、更换全部默认口令、限制 AI 服务网络访问（详见 [SECURITY.md](SECURITY.md)）。
 
 ## 路线图

@@ -7,6 +7,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.Result;
 import org.spring_web.spring_boot_service.dto.AuthDtos;
+import org.spring_web.spring_boot_service.security.ClientIpResolver;
 import org.spring_web.spring_boot_service.service.AuthService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,12 +29,13 @@ public class AuthController {
     private static final String BEARER = "Bearer ";
 
     private final AuthService authService;
+    private final ClientIpResolver clientIpResolver;
 
     @Operation(summary = "登录，返回 accessToken 与 refreshToken（失败按 用户名 + IP 限流）")
     @PostMapping("/login")
     public Result<AuthDtos.TokenResponse> login(@Valid @RequestBody AuthDtos.LoginRequest request,
                                                 HttpServletRequest servletRequest) {
-        return Result.ok(authService.login(request, clientIp(servletRequest)));
+        return Result.ok(authService.login(request, clientIpResolver.resolve(servletRequest)));
     }
 
     @Operation(summary = "轮换刷新令牌，旧令牌立即失效")
@@ -50,15 +52,6 @@ public class AuthController {
                 ? null : authorization.substring(BEARER.length());
         authService.logout(token, body == null ? null : body.refreshToken());
         return Result.ok();
-    }
-
-    /** 取真实客户端 IP：优先 X-Forwarded-For 的第一段（反代场景），否则用直连地址。 */
-    private String clientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
     }
 
     @Operation(summary = "当前登录用户与所属开课")

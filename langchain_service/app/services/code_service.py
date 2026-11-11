@@ -11,6 +11,7 @@ from app.schemas.materials import SourceFile
 from app.services.llm_service import LlmService
 from app.services.mock_responses import mock_code_review
 from app.services.scoring import CODE_DIMENSION_SPECS, clamp_score
+from app.utils.prompt_guard import append_warning, detect_injection
 from app.utils.text_utils import clip_source_material
 
 
@@ -66,6 +67,14 @@ class CodeReviewService:
                 summary="源码包中没有可评审的 Java 文件，本次源码语义分为 0。",
             )
 
+        # 检测学生材料中的评审操纵语句，仅用于在 summary 末尾追加一行提示
+        materials_text = "\n".join(
+            [file.content for file in clipped_request.java_files]
+            + [f"{issue.rule} {issue.message}" for issue in clipped_request.issues]
+            + [str(value) for value in clipped_request.metrics.values()]
+        )
+        detections = detect_injection(materials_text)
+
         result = await self._llm.generate_json(
             task="code_review",
             schema=CodeReviewDraft,
@@ -86,8 +95,9 @@ class CodeReviewService:
             for spec in CODE_DIMENSION_SPECS
         ]
 
-        # 后端按 score 落库，这里用设计 60% + 注释 40% 折算成百分制
-        score = clamp_score(draft.design_score * 0.6 + draft.doc_score * 0.4)
+        # 后端按 score 落库，这里用设计 60% + 注释 40% 折算成百分制；
+        # 两个分项先各自 clamp 再合成，避免 LLM 返回 150/-20 之类的越界值污染成绩
+        score = clamp_score(clamp_score(draft.design_score) * 0.6 + clamp_score(draft.doc_score) * 0.4)
 
         return CodeReviewResponse(
             submission_id=request.submission_id,
@@ -95,5 +105,5 @@ class CodeReviewService:
             model=result.model,
             dimensions=dimensions,
             suggestions=draft.suggestions,
-            summary=draft.summary,
+            summary=append_warning(draft.summary, detections),
         )

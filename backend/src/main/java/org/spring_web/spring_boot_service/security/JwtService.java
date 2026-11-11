@@ -15,8 +15,9 @@ import org.springframework.stereotype.Component;
 /**
  * JWT 签发与解析，使用 jjwt 0.12 的类型安全 API（不再用已废弃的 signWith(SignatureAlgorithm, String)）。
  *
- * <p>两类令牌都带 {@code ver}（用户令牌版本号）：改密码或管理员强制下线时
- * 只需在 Redis 里递增版本号，所有已签发令牌立即失效，无需维护黑名单列表。</p>
+ * <p>两类令牌都带 {@code ver}（用户令牌版本号）：改密码、教师重置密码或强制下线时
+ * 只需递增 MySQL 中 {@code sys_user.token_version}，所有已签发令牌立即失效，无需维护
+ * 黑名单列表。版本号刻意不放 Redis——Redis 被 flush 后不能跟着归零，否则吊销会失效。</p>
  */
 @Component
 @RequiredArgsConstructor

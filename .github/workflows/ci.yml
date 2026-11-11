@@ -33,9 +33,9 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # 目前没有单元测试；接入测试后去掉 -x test 就能纳入 CI。
-      - name: Build
-        run: ./gradlew build -x test --no-daemon
+      # src/test 里已有纯逻辑单元测试（common 包），构建时一并执行。
+      - name: Build & test
+        run: ./gradlew build --no-daemon
 
   frontend:
     name: Frontend (Vite + Node 20)
@@ -76,6 +76,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 不做真实调用：只验证应用能装配起来（配置、路由、鉴权依赖无导入错误）。
+      # mock 模式运行全部接口冒烟测试（不依赖网络与大模型 Key）。
+      - name: Test (mock provider)
+        run: python -m pytest -q
+
+      # 额外验证应用能装配起来（配置、路由、鉴权依赖无导入错误）。
       - name: Import check
         run: python -c "from app.main import create_app; create_app()"

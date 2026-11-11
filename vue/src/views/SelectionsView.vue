@@ -5,7 +5,7 @@ import Icon from '../components/Icon.vue'
 import StatusPill from '../components/StatusPill.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Drawer from '../components/Drawer.vue'
-import { api } from '../api/endpoints'
+import { api, DIFFICULTY_LABEL } from '../api/endpoints'
 import { confirm } from '../stores/confirm'
 import { track } from '../stores/tasks'
 import { toast, toastError } from '../stores/toast'
@@ -225,7 +225,7 @@ onMounted(load)
             <div style="min-width: 0">
               <h3 style="font-size: 14.5px; font-weight: 650" class="truncate">{{ s.topic?.title || '题目' }}</h3>
               <div class="small dim" style="margin-top: 2px">
-                {{ { EASY: '入门', MEDIUM: '进阶', HARD: '挑战' }[s.topic?.difficulty] || '不限难度' }}
+                {{ DIFFICULTY_LABEL[s.topic?.difficulty] || '不限难度' }}
                 · 截止 {{ fmtDate(s.submitDeadline) }}
               </div>
             </div>

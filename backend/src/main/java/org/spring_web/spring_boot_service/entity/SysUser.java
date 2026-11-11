@@ -72,6 +72,14 @@ public class SysUser {
     private Integer mustChangePassword;
 
     /**
+     * 令牌版本：递增即吊销该用户所有已签发令牌。
+     *
+     * <p>存 MySQL 而不是 Redis：Redis 被 flush 或换实例后版本号不能跟着归零，
+     * 否则改密码 / 教师重置密码 / 强制下线都会失效。</p>
+     */
+    private Long tokenVersion;
+
+    /**
      * 最近登录时间
      */
     private LocalDateTime lastLoginAt;

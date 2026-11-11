@@ -2,14 +2,14 @@ package org.spring_web.spring_boot_service.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
 import lombok.RequiredArgsConstructor;
+import org.spring_web.spring_boot_service.common.ArchiveGuard;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
 import org.spring_web.spring_boot_service.common.ErrorCode;
@@ -43,9 +43,6 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @RequiredArgsConstructor
 public class SubmissionService {
-
-    private static final long MAX_UNPACKED_BYTES = 500L * 1024 * 1024;
-    private static final int MAX_ENTRIES = 3000;
 
     private final SubmissionMapper submissionMapper;
     private final SubmissionVersionMapper versionMapper;
@@ -251,44 +248,19 @@ public class SubmissionService {
         return submission;
     }
 
-    /** Zip Slip / 压缩炸弹 / 可执行文件校验，全部在入库前完成。 */
+    /**
+     * Zip Slip / 压缩炸弹 / 可执行文件校验，全部在入库前完成。
+     *
+     * <p>.zip 与 .jar 是同一套 ZIP 容器格式，必须走同一条校验链——
+     * 旧实现让 .jar 提前 return，等于给绕过校验留了后门。</p>
+     */
     private void validateArchive(MultipartFile file) {
         String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
         BizAssert.param(filename.endsWith(".zip") || filename.endsWith(".jar"), "源码包只支持 ZIP / JAR");
-        if (!filename.endsWith(".zip")) {
-            return;
-        }
-        try (ZipInputStream zip = new ZipInputStream(file.getInputStream())) {
-            ZipEntry entry;
-            int count = 0;
-            long total = 0;
-            byte[] buffer = new byte[8192];
-            while ((entry = zip.getNextEntry()) != null) {
-                count++;
-                if (count > MAX_ENTRIES) {
-                    throw invalid("TOO_MANY_ENTRIES", "压缩包文件数超过 3000");
-                }
-                String name = entry.getName();
-                java.nio.file.Path normalized = java.nio.file.Paths.get(name).normalize();
-                if (normalized.isAbsolute() || name.contains("..")
-                        || name.startsWith("/") || name.startsWith("\\")) {
-                    throw invalid("ZIP_SLIP", "压缩包包含非法路径：" + name);
-                }
-                if (!entry.isDirectory()) {
-                    String lower = name.toLowerCase(Locale.ROOT);
-                    if (lower.endsWith(".exe") || lower.endsWith(".dll") || lower.endsWith(".so")
-                            || lower.endsWith(".bat") || lower.endsWith(".cmd") || lower.endsWith(".sh")) {
-                        throw invalid("UNSAFE_FILE", "压缩包包含可执行文件：" + name);
-                    }
-                    int read;
-                    while ((read = zip.read(buffer)) != -1) {
-                        total += read;
-                        if (total > MAX_UNPACKED_BYTES) {
-                            throw invalid("UNPACKED_TOO_LARGE", "解压后超过 500 MB");
-                        }
-                    }
-                }
-            }
+        try (InputStream in = file.getInputStream()) {
+            ArchiveGuard.scan(in, ArchiveGuard.Limits.defaults());
+        } catch (ArchiveGuard.Violation violation) {
+            throw invalid(violation.code(), violation.message());
         } catch (IOException ex) {
             throw invalid("ZIP_BROKEN", "压缩包无法解析");
         }

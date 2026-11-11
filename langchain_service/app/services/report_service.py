@@ -20,6 +20,7 @@ from app.services.scoring import (
     weighted_total,
 )
 from app.services.template_service import TemplateService
+from app.utils.prompt_guard import append_warning, detect_injection
 from app.utils.text_utils import clip_report_material, split_report_text
 
 
@@ -55,6 +56,9 @@ class ReportService:
         query_parts = [topic.title if topic else "", report.sections[0].content[:600] if report.sections else ""]
         reference_contexts = self._templates.search_contexts(" ".join(query_parts).strip(), top_k=2)
 
+        # 检测报告正文中的评审操纵语句，仅用于在 summary 末尾追加一行提示
+        detections = detect_injection("\n".join(section.content for section in report.sections))
+
         result = await self._llm.generate_json(
             task="report_evaluation",
             schema=ReportEvaluationDraft,
@@ -72,7 +76,7 @@ class ReportService:
             score=score,
             grade=grade_of(score),
             model=result.model,
-            summary=draft.summary,
+            summary=append_warning(draft.summary, detections),
             dimensions=dimensions,
             highlights=draft.highlights,
             problems=draft.problems,

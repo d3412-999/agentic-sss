@@ -13,6 +13,7 @@ import org.spring_web.spring_boot_service.common.BizException;
 import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.common.PageResult;
 import org.spring_web.spring_boot_service.common.Times;
+import org.spring_web.spring_boot_service.config.SssProperties;
 import org.spring_web.spring_boot_service.dto.SelectionDtos;
 import org.spring_web.spring_boot_service.entity.CodeAnalysis;
 import org.spring_web.spring_boot_service.entity.DefenseSession;
@@ -74,6 +75,7 @@ public class SelectionService {
     private final GradeMapper gradeMapper;
     private final OfferingService offeringService;
     private final AuditLogService auditLog;
+    private final SssProperties properties;
 
     @Transactional(rollbackFor = Exception.class)
     public List<SelectionDtos.CreatedItemVO> create(SelectionDtos.SelectionCreateRequest request) {
@@ -96,10 +98,12 @@ public class SelectionService {
         //     若不加锁，「已有 + 本次 ≤ 上限」是读后写判断，并发请求会同时通过。
         offeringStudentMapper.lockStudentRelation(offeringId, studentId);
 
-        // 3. 去重 + 单次批量上限
+        // 3. 去重 + 单次批量上限（上限走配置 sss.limits.selection-batch-max，默认 10）
         Set<String> distinct = new LinkedHashSet<>(request.topicIds());
         BizAssert.param(distinct.size() == request.topicIds().size(), "不能重复选择同一题目");
-        BizAssert.param(!distinct.isEmpty() && distinct.size() <= 10, "单次最多选择 10 道题目");
+        int batchMax = properties.getLimits().getSelectionBatchMax();
+        BizAssert.param(!distinct.isEmpty() && distinct.size() <= batchMax,
+                "单次最多选择 " + batchMax + " 道题目");
 
         // 4. 已有 + 本次不能超过每人限额
         List<Selection> existing = selectionMapper.selectList(new LambdaQueryWrapper<Selection>()
