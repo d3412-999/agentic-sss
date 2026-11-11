@@ -16,6 +16,11 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: frontendPort,
       strictPort: false,
+      watch: {
+        // 有的编辑器保存时先生成临时目录/文件（如 .DefenseView.vue.xxx.tmpdir），
+        // Windows 下被文件锁住时会让 Vite 的文件监听抛 EBUSY 直接退出 dev server，这里忽略掉。
+        ignored: ['**/*.tmpdir/**', '**/.*.tmpdir/**', '**/*.tmp'],
+      },
       proxy: {
         '/api': { target: apiTarget, changeOrigin: true },
         '/actuator': { target: apiTarget, changeOrigin: true },

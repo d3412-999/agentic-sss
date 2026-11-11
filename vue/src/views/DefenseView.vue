@@ -608,6 +608,7 @@ function retryVideoUpload() {
 const videoUrl = ref('')
 const videoLoading = ref(false)
 const videoLoadError = ref('')
+const videoLooksDark = ref(false)
 let videoUrlSeq = 0
 
 function revokeVideoUrl() {
@@ -617,6 +618,7 @@ function revokeVideoUrl() {
     videoUrl.value = ''
   }
   videoLoading.value = false
+  videoLooksDark.value = false
 }
 
 async function loadDefenseVideo() {
@@ -650,6 +652,88 @@ function retryVideoLoad() {
 function onVideoElementError() {
   if (!videoUrl.value) return
   videoLoadError.value = '浏览器无法播放该录像（编码不受支持或文件损坏），可尝试下载后用本地播放器打开'
+}
+
+/** 把当前视频帧画到小画布并返回平均亮度（0~255）。 */
+function frameBrightness(video) {
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = 64
+    canvas.height = 36
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return null
+    ctx.drawImage(video, 0, 0, 64, 36)
+    const data = ctx.getImageData(0, 0, 64, 36).data
+    let sum = 0
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+    }
+    return sum / (data.length / 4)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 抽几帧估算录像亮度：学生摄像头被遮挡/禁用时，webm 只有声音、画面全黑，
+ * 教师这里直接给出说明，避免误以为"播放器坏了"。
+ *
+ * 注意：MediaRecorder 产出的 webm 往往没有 duration（duration=Infinity），不能靠 seek 定位，
+ * 因此静音播放约 2 秒并在不同时刻采样（取最大值），完成后暂停并回到开头。
+ */
+async function onVideoElementLoaded(event) {
+  const video = event?.target
+  if (!video || !video.videoWidth) return
+  // 等首帧真正完成解码（loadeddata 触发时画面可能还没画出来）
+  await new Promise((resolve) => {
+    if (video.readyState >= 2) return resolve()
+    let settled = false
+    const done = () => {
+      if (settled) return
+      settled = true
+      video.removeEventListener('loadeddata', done)
+      resolve()
+    }
+    video.addEventListener('loadeddata', done)
+    setTimeout(done, 1500)
+  })
+  const samples = []
+  const collect = () => {
+    const brightness = frameBrightness(video)
+    if (brightness != null) samples.push(brightness)
+  }
+  collect()
+  let played = false
+  try {
+    video.muted = true
+    await video.play()
+    played = true
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    collect()
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    collect()
+  } catch {
+    // 自动播放被拦截时只保留首帧采样
+  } finally {
+    if (played) {
+      try {
+        video.pause()
+      } catch {
+        // 忽略
+      }
+      try {
+        video.currentTime = 0
+      } catch {
+        // MediaRecorder webm 可能不支持回 seek，忽略
+      }
+      try {
+        video.muted = false
+      } catch {
+        // 忽略
+      }
+    }
+  }
+  if (samples.length) videoLooksDark.value = Math.max(...samples) < 28
 }
 
 function downloadDefenseVideo() {
@@ -1467,7 +1551,7 @@ onBeforeUnmount(() => {
                       {{ device.label }}
                     </option>
                   </select>
-                  <span class="small dim">画面不对/黑屏时换一个</span>
+                  <span class="small dim">画面不对/黑屏时换一个；录像前请确认预览里能看到自己</span>
                 </div>
                 <div v-if="frameDark" class="alert alert--warn" style="align-items: flex-start">
                   <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
@@ -1601,7 +1685,21 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
                 <template v-else-if="videoUrl">
-                  <video :src="videoUrl" controls playsinline class="video-player" @error="onVideoElementError" />
+                  <video
+                    :src="videoUrl"
+                    controls
+                    playsinline
+                    class="video-player"
+                    @error="onVideoElementError"
+                    @loadeddata="onVideoElementLoaded"
+                  />
+                  <div v-if="videoLooksDark" class="alert alert--warn" style="align-items: flex-start">
+                    <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                    <span>
+                      该录像画面接近全黑（学生摄像头当时可能被遮挡、被硬件开关禁用、没开权限或被其他软件占用），
+                      声音正常。可让学生检查摄像头后重新答辩，或下载录像自行核对。
+                    </span>
+                  </div>
                   <div class="row row--wrap small dim">
                     <span>时长 {{ fmtDuration(session.videoDurationMs) }}</span>
                     <span>大小 {{ sizeText(session.videoSizeBytes) }}</span>
