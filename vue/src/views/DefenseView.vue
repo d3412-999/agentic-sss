@@ -74,6 +74,10 @@ const CAPTURE_WIDTH = 320
 const videoRef = ref(null)
 const cameraState = ref('idle') // idle | starting | live | blocked | unsupported | closed
 const cameraMessage = ref('')
+const cameraDevices = ref([])
+const selectedCameraId = ref('')
+const frameDark = ref(false)
+let darkStreak = 0
 const presence = ref('unknown') // unknown | present | absent | unavailable
 const faceMissCount = ref(0)
 const faceUnavailable = ref(false)
@@ -137,6 +141,8 @@ function stopCamera() {
   cameraRequestSeq += 1
   stopFaceTimer()
   releaseCamera()
+  frameDark.value = false
+  darkStreak = 0
   if (cameraState.value === 'live' || cameraState.value === 'starting') cameraState.value = 'closed'
 }
 
@@ -161,6 +167,12 @@ async function checkFace() {
   if (typeof document !== 'undefined' && document.hidden) return
   const imageBase64 = captureFrameBase64()
   if (!imageBase64) return
+  const quality = sampleVideoQuality()
+  if (quality) {
+    const tooDark = quality.avg < 32 && quality.variance < 40
+    darkStreak = tooDark ? darkStreak + 1 : 0
+    frameDark.value = darkStreak >= 2
+  }
   faceBusy.value = true
   try {
     const result = await api.faceCheck(sessionId.value, imageBase64)
@@ -190,6 +202,116 @@ function startFaceTimer() {
   checkFace()
 }
 
+const CAMERA_DEVICE_STORAGE_KEY = 'sss.cameraDeviceId'
+
+/** 列出可用摄像头（需先授权，授权后 label 才有值）。用于排查"默认选到红外/虚拟摄像头导致黑画面"。 */
+async function loadCameraDevices() {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    cameraDevices.value = devices
+      .filter((device) => device.kind === 'videoinput')
+      .map((device, index) => ({ deviceId: device.deviceId, label: device.label || `摄像头 ${index + 1}` }))
+    if (selectedCameraId.value && !cameraDevices.value.some((item) => item.deviceId === selectedCameraId.value)) {
+      selectedCameraId.value = ''
+    }
+  } catch {
+    // 枚举失败不影响答辩
+  }
+}
+
+function rememberCameraDevice(deviceId) {
+  selectedCameraId.value = deviceId
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (deviceId) localStorage.setItem(CAMERA_DEVICE_STORAGE_KEY, deviceId)
+      else localStorage.removeItem(CAMERA_DEVICE_STORAGE_KEY)
+    }
+  } catch {
+    // localStorage 不可用时忽略
+  }
+}
+
+function cameraVideoConstraints(height = 360) {
+  const base = { width: { ideal: 640 }, height: { ideal: height } }
+  return selectedCameraId.value ? { ...base, deviceId: { exact: selectedCameraId.value } } : base
+}
+
+async function acquireUserMedia(withAudio) {
+  const build = () =>
+    withAudio
+      ? { video: cameraVideoConstraints(360), audio: { echoCancellation: true, noiseSuppression: true } }
+      : { video: cameraVideoConstraints(480), audio: false }
+  try {
+    return await navigator.mediaDevices.getUserMedia(build())
+  } catch (err) {
+    // 之前选的摄像头已拔出/被占用：清掉选择，用默认设备再试一次
+    if (selectedCameraId.value && ['OverconstrainedError', 'NotFoundError', 'NotReadableError'].includes(err?.name)) {
+      rememberCameraDevice('')
+      return navigator.mediaDevices.getUserMedia(build())
+    }
+    throw err
+  }
+}
+
+/** 切换摄像头：录像中切换会重新开始整场录像（当前已录内容丢弃），需用户确认。 */
+async function onCameraDeviceChange(deviceId) {
+  if (deviceId === selectedCameraId.value) return
+  const wasRecording = videoRecorderState.value === 'recording'
+  if (wasRecording) {
+    const ok = await confirm({
+      title: '切换摄像头',
+      message: '切换摄像头会重新开始整场录像，当前已录内容将丢失。确定切换吗？',
+      confirmText: '切换摄像头',
+      danger: true,
+    })
+    if (!ok) return
+  }
+  rememberCameraDevice(deviceId)
+  if (wasRecording) {
+    try {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.onstop = null
+        mediaRecorder.stop()
+      }
+    } catch {
+      // 忽略停止异常
+    }
+    cleanupVideoRecorder()
+  }
+  stopCamera()
+  await startCamera(session.value?.status === 'IN_PROGRESS')
+}
+
+/** 抽帧估算亮度/对比度，用于提示"画面过暗/被遮挡"（不影响在场检测与录像本身）。 */
+function sampleVideoQuality() {
+  const video = videoRef.value
+  if (!video || !video.videoWidth) return null
+  const width = 64
+  const height = 36
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
+  try {
+    ctx.drawImage(video, 0, 0, width, height)
+    const data = ctx.getImageData(0, 0, width, height).data
+    let sum = 0
+    let sumSq = 0
+    const pixels = data.length / 4
+    for (let i = 0; i < data.length; i += 4) {
+      const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+      sum += luminance
+      sumSq += luminance * luminance
+    }
+    const avg = sum / pixels
+    return { avg, variance: Math.max(0, sumSq / pixels - avg * avg) }
+  } catch {
+    return null
+  }
+}
+
 /**
  * 打开摄像头（+ 可选麦克风）。
  * - 仅在场检测/预览时：video only；
@@ -210,22 +332,12 @@ async function startCamera(withAudio = false) {
   let stream = null
   let audioEnabled = Boolean(withAudio)
   try {
-    stream = await navigator.mediaDevices.getUserMedia(
-      audioEnabled
-        ? {
-            video: { width: { ideal: 640 }, height: { ideal: 360 } },
-            audio: { echoCancellation: true, noiseSuppression: true },
-          }
-        : { video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
-    )
+    stream = await acquireUserMedia(audioEnabled)
   } catch (err) {
     if (audioEnabled) {
       audioEnabled = false
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false,
-        })
+        stream = await acquireUserMedia(false)
         videoNote.value = '麦克风未授权，无法录制整场答辩录像；逐题录音会在作答时单独申请麦克风'
       } catch (fallbackErr) {
         handleMediaError(fallbackErr)
@@ -250,6 +362,7 @@ async function startCamera(withAudio = false) {
   cameraState.value = 'live'
   presence.value = 'unknown'
   startFaceTimer()
+  void loadCameraDevices()
   if (audioEnabled) {
     videoNote.value = ''
     startVideoRecording()
@@ -1078,6 +1191,12 @@ watch(sessionId, async () => {
 
 onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
+  try {
+    selectedCameraId.value =
+      (typeof localStorage !== 'undefined' && localStorage.getItem(CAMERA_DEVICE_STORAGE_KEY)) || ''
+  } catch {
+    selectedCameraId.value = ''
+  }
   await load()
   await nextTick()
   if (!isStudent.value) return
@@ -1329,6 +1448,24 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
+                <div v-if="cameraDevices.length" class="cam-picker">
+                  <span class="small dim">摄像头</span>
+                  <select :value="selectedCameraId" @change="onCameraDeviceChange($event.target.value)">
+                    <option value="">默认摄像头</option>
+                    <option v-for="device in cameraDevices" :key="device.deviceId" :value="device.deviceId">
+                      {{ device.label }}
+                    </option>
+                  </select>
+                  <span class="small dim">画面不对/黑屏时换一个</span>
+                </div>
+                <div v-if="frameDark" class="alert alert--warn" style="align-items: flex-start">
+                  <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                  <span>
+                    摄像头画面过暗或全黑（可能被遮挡、相机隐私开关关闭，或选到了红外/虚拟摄像头）：请在上方切换到正确的摄像头，或检查镜头。
+                    声音仍会录制，但教师复核时看不到画面。
+                  </span>
+                </div>
+
                 <div class="row row--wrap">
                   <button
                     v-if="cameraState !== 'live'"
@@ -1510,6 +1647,7 @@ onBeforeUnmount(() => {
       <div class="rec-window__meta">
         <span class="rec-window__rec"><span class="rec-dot" />REC {{ videoElapsedText }}</span>
         <span class="rec-window__hint">正在录像 · 仅供教师复核</span>
+        <span v-if="frameDark" class="rec-window__hint" style="color: #fbbf24">画面过暗，请检查摄像头</span>
       </div>
     </div>
   </div>
@@ -1555,6 +1693,23 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.cam-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cam-picker select {
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border, #d6d3d1);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text, #1f2937);
+  font-size: 12px;
 }
 
 .video-player {

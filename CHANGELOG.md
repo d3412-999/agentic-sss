@@ -7,7 +7,7 @@
 
 ### 新增（答辩子系统：语音转写 + 摄像头在场检测）
 
-- **答辩主链路补齐**：新增 `DefenseController` / `DefenseService`（10 个接口）与
+- **答辩主链路补齐**：新增 `DefenseController` / `DefenseService`（12 个接口）与
   `V5__defense_voice_and_face.sql`，覆盖「教师发起 → AI 出题 → 逐题录音 → ASR 转写 →
   结束 → AI 评分 → 成绩」；状态机 `READY → IN_PROGRESS → COMPLETED → EVALUATED`，
   选题状态同步 `DEFENDING → DEFENDED`；
@@ -23,6 +23,18 @@
   「答辩」页签（候选学生/发起/进入），学生「我的选题」加“进入答辩”入口；
 - **API 文档**：新增 [docs/defense-asr-face.md](docs/defense-asr-face.md)（流程、接口、模型配置、隐私边界）；
 - **测试**：AI 服务新增 15 个用例（ASR + 在场检测），当前 43 passed / 1 skipped（opencv 未装时跳过）。
+
+### 新增（答辩录像 + 摄像头设备排查）
+
+- **整场答辩录像**：学生端答辩（IN_PROGRESS）用同一路 `getUserMedia(video+audio)` 同时做在场检测、
+  右下角录像小窗和 `MediaRecorder` 整场录制（webm/vp8+opus）；结束自动上传（失败保留 Blob 可重试）；
+- **后端**：`V6__defense_video.sql` 增加 `video_file_id / video_duration_ms / video_size_bytes / video_uploaded_at`，
+  `POST/GET /api/v1/defense/sessions/{id}/video`（归属校验 + 流式回放），`SessionVO` 增加录像字段，
+  multipart 上限提升到 320/340MB（单场录像上限 300MB）；
+- **教师回放**：答辩详情新增「答辩录像」卡片（播放/下载），学生本人只读；
+- **摄像头排查**：答辩页新增摄像头设备下拉（授权后列出全部 videoinput，可切换并记忆），
+  以及「画面过暗/全黑」检测提示（连续约 6 秒黑画面时在摄像头卡片和录像小窗告警）；
+  录像中切换摄像头会二次确认并重新开始整场录像；隐私文案同步为「用于在场检测与整场答辩录像，录像仅教师可复核」。
 
 ### 修复（安全与健壮性）
 
