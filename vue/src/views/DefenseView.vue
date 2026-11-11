@@ -1189,6 +1189,16 @@ watch(sessionId, async () => {
   else if (canDetect.value) void startCamera()
 })
 
+/** 教师从「查看录像」入口跳转过来时，滚动到「答辩录像」卡片（?focus=video）。 */
+function focusVideoCard() {
+  if (route.query.focus !== 'video' || !session.value?.videoAvailable) return
+  void nextTick(() => {
+    if (typeof document === 'undefined') return
+    const card = document.getElementById('defense-video')
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
 onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
   try {
@@ -1199,6 +1209,7 @@ onMounted(async () => {
   }
   await load()
   await nextTick()
+  focusVideoCard()
   if (!isStudent.value) return
   if (session.value?.status === 'IN_PROGRESS') void ensureRecordingStream()
   else if (canDetect.value) void startCamera()
@@ -1533,7 +1544,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div v-if="videoCardVisible" class="card">
+          <div v-if="videoCardVisible" id="defense-video" class="card">
             <div class="card__head">
               <div>
                 <h3><Icon name="eye" :size="15" style="margin-right: 6px; vertical-align: -2px" />答辩录像</h3>

@@ -90,6 +90,20 @@ function enter(row) {
   if (sessionId) router.push(`/defense/${sessionId}`)
 }
 
+/** 会话列表里有录像的 sessionId 集合（候选学生表按 sessionId 关联）。 */
+const videoBySessionId = computed(() => {
+  const map = {}
+  for (const session of sessions.value) {
+    if (session?.id) map[session.id] = Boolean(session.videoAvailable)
+  }
+  return map
+})
+
+/** 教师回放入口：直接跳到答辩页并滚动到「答辩录像」卡片。 */
+function openVideo(sessionId) {
+  if (sessionId) router.push(`/defense/${sessionId}?focus=video`)
+}
+
 function fmt(value) {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -174,6 +188,13 @@ onMounted(load)
               <td class="ta-r">
                 <div class="row" style="justify-content: flex-end; gap: 6px">
                   <button
+                    v-if="row.sessionId && videoBySessionId[row.sessionId]"
+                    class="btn btn--ghost btn--sm"
+                    @click="openVideo(row.sessionId)"
+                  >
+                    <Icon name="play" :size="14" />查看录像
+                  </button>
+                  <button
                     v-if="row.sessionId"
                     class="btn btn--ghost btn--sm"
                     @click="enter(row)"
@@ -230,9 +251,18 @@ onMounted(load)
               <td class="ta-c num mono" style="font-weight: 650">{{ row.score ?? '—' }}</td>
               <td class="ta-c small dim">{{ fmt(row.startedAt) }}</td>
               <td class="ta-r">
-                <button class="btn btn--ghost btn--sm" @click="enter(row)">
-                  <Icon name="arrow-right" :size="14" />进入
-                </button>
+                <div class="row" style="justify-content: flex-end; gap: 6px">
+                  <button
+                    v-if="row.videoAvailable"
+                    class="btn btn--ghost btn--sm"
+                    @click="openVideo(row.id)"
+                  >
+                    <Icon name="play" :size="14" />查看录像
+                  </button>
+                  <button class="btn btn--ghost btn--sm" @click="enter(row)">
+                    <Icon name="arrow-right" :size="14" />进入
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>

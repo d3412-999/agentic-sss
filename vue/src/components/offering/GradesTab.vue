@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Icon from '../Icon.vue'
 import StatusPill from '../StatusPill.vue'
 import EmptyState from '../EmptyState.vue'
@@ -14,6 +15,11 @@ const props = defineProps({
   offeringId: { type: String, required: true },
   offering: { type: Object, default: null },
 })
+
+const router = useRouter()
+
+/** studentId -> 最近一次答辩会话（用于成绩表里的「查看录像」入口）。 */
+const defenseByStudent = ref({})
 
 const loading = ref(true)
 const busy = ref('')
@@ -190,7 +196,35 @@ async function unlock(row) {
   }
 }
 
-onMounted(load)
+/** 拉答辩会话，按 studentId 取最近一次（用于成绩表里的「查看录像」入口）。 */
+async function loadDefenseSessions() {
+  try {
+    const data = await api.teacherDefenseSessions(props.offeringId)
+    const list = Array.isArray(data) ? data : data?.list || []
+    const map = {}
+    for (const session of list) {
+      if (!session?.studentId) continue
+      const currentAt = session.startedAt ? new Date(session.startedAt).getTime() : 0
+      const prev = map[session.studentId]
+      const prevAt = prev?.startedAt ? new Date(prev.startedAt).getTime() : 0
+      if (!prev || currentAt >= prevAt) map[session.studentId] = session
+    }
+    defenseByStudent.value = map
+  } catch {
+    defenseByStudent.value = {}
+  }
+}
+
+function openDefense(row) {
+  const session = defenseByStudent.value[row.studentId]
+  if (!session?.id) return
+  router.push(`/defense/${session.id}${session.videoAvailable ? '?focus=video' : ''}`)
+}
+
+onMounted(() => {
+  load()
+  loadDefenseSessions()
+})
 </script>
 
 <template>
@@ -204,6 +238,7 @@ onMounted(load)
 
     <div class="row row--wrap" style="margin-bottom: 14px">
       <span class="pill pill--brand">权重 答辩 {{ weights.defense }}% · 源码 {{ weights.code }}% · 报告 {{ weights.report }}%</span>
+      <span class="small dim">答辩录像：在操作列点「查看录像」</span>
       <input v-model="keyword" class="input" style="width: 190px" placeholder="搜索学号 / 姓名" @keyup.enter="page = 1; load()" />
       <select v-model="statusFilter" class="select" style="width: 130px" @change="page = 1; load()">
         <option value="">全部状态</option>
@@ -272,6 +307,14 @@ onMounted(load)
               </td>
               <td class="ta-r">
                 <div class="row" style="justify-content: flex-end; gap: 4px">
+                  <button
+                    v-if="defenseByStudent[r.studentId]"
+                    class="btn btn--ghost btn--sm"
+                    :title="defenseByStudent[r.studentId].videoAvailable ? '查看答辩录像' : '查看答辩记录'"
+                    @click="openDefense(r)"
+                  >
+                    <Icon name="play" :size="13" />{{ defenseByStudent[r.studentId].videoAvailable ? '查看录像' : '查看答辩' }}
+                  </button>
                   <button class="btn btn--ghost btn--sm" @click="openAdjust(r)">调整</button>
                   <button v-if="r.published" class="btn btn--icon btn--sm" title="解锁" @click="unlock(r)">
                     <Icon name="lock" :size="14" />
