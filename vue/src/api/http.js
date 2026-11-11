@@ -201,6 +201,27 @@ export async function download(path, filename = '') {
   setTimeout(() => URL.revokeObjectURL(url), 4000)
 }
 
+/**
+ * 带 Authorization 头拉取二进制并返回 blob URL。
+ * `<video src>`/`<img src>` 这类标签无法自定义请求头，所以鉴权资源必须先 fetch 成 blob 再播放。
+ */
+export async function fetchBlobUrl(path) {
+  const res = await fetch(API_BASE + path, {
+    headers: buildHeaders({ auth: true }),
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const traceId = res.headers.get('X-Trace-Id') || ''
+    throw new ApiError(
+      traceId ? `读取文件失败 HTTP ${res.status}（traceId: ${traceId}）` : `读取文件失败 HTTP ${res.status}`,
+      res.status,
+      res.status,
+      traceId,
+    )
+  }
+  return URL.createObjectURL(await res.blob())
+}
+
 export function toQuery(params = {}) {
   const qs = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {

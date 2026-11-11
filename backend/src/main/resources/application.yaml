@@ -44,10 +44,11 @@ spring:
 
   servlet:
     multipart:
-      # Must stay above sss.storage.max-source-bytes (100MB), otherwise large
-      # source archives are rejected by the container before validation.
-      max-file-size: 120MB
-      max-request-size: 130MB
+      # Upper bound for any single upload: source archives (100MB) and the
+      # defense recording (up to 300MB, video/webm from MediaRecorder).
+      # The request cap leaves headroom for multipart boundaries + form fields.
+      max-file-size: 320MB
+      max-request-size: 340MB
 
   jackson:
     time-zone: Asia/Shanghai

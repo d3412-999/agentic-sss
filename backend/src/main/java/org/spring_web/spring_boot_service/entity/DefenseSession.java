@@ -83,6 +83,26 @@ public class DefenseSession {
     private Integer faceMissCount;
 
     /**
+     * 答辩录像文件 ID（file_object.id；null 表示未上传录像）
+     */
+    private Long videoFileId;
+
+    /**
+     * 录像时长（毫秒）
+     */
+    private Long videoDurationMs;
+
+    /**
+     * 录像文件大小（字节）
+     */
+    private Long videoSizeBytes;
+
+    /**
+     * 录像上传时间
+     */
+    private LocalDateTime videoUploadedAt;
+
+    /**
      * 开始时间
      */
     private LocalDateTime startedAt;

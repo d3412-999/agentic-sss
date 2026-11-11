@@ -35,7 +35,12 @@ public final class DefenseDtos {
             String sessionStatus) {
     }
 
-    /** 答辩会话。列表接口中 questions 为 null，详情/创建/开始/结束后才带题目。 */
+    /**
+     * 答辩会话。列表接口中 questions 为 null，详情/创建/开始/结束后才带题目。
+     *
+     * <p>录像字段固定在末尾（前端并行开发已按此顺序对接）：{@code videoFileId} 非空即表示
+     * 已有整场录像；{@code videoAvailable} 是它的布尔便捷位，避免前端到处判空。</p>
+     */
     public record SessionVO(
             String id,
             String offeringId,
@@ -57,7 +62,11 @@ public final class DefenseDtos {
             OffsetDateTime evaluatedAt,
             Long durationMs,
             Integer version,
-            List<QuestionVO> questions) {
+            List<QuestionVO> questions,
+            String videoFileId,
+            Long videoDurationMs,
+            Long videoSizeBytes,
+            Boolean videoAvailable) {
     }
 
     /** 答辩题目；学生角色时 expectedPoints / referenceAnswer 为 null。 */

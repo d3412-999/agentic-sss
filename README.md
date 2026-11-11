@@ -288,7 +288,7 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 | StudentSelectionController | 5 | `/api/v1/student/*` |
 | SubmissionController | 9 | `/api/v1/student/selections/{id}/...`、`/api/v1/files/*` |
 | GradeController | 9 | `/api/v1/teacher/grades/*`、`/api/v1/student/grades/*` |
-| DefenseController | 10 | `/api/v1/teacher/defense/*`、`/api/v1/defense/sessions/*`、`/api/v1/student/defense/*` |
+| DefenseController | 12 | `/api/v1/teacher/defense/*`、`/api/v1/defense/sessions/*`（含录像 POST/GET）、`/api/v1/student/defense/*` |
 | MiscController | 5 | `/api/v1/notifications/*`、`/api/v1/tasks/*` |
 | HealthController | 1 | `/api/v1/health` |
 

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import StatusPill from '../components/StatusPill.vue'
@@ -128,7 +128,9 @@ function releaseCamera() {
     cameraStream.getTracks().forEach((track) => track.stop())
     cameraStream = null
   }
-  if (videoRef.value) videoRef.value.srcObject = null
+  for (const video of [videoRef.value, previewVideoRef.value]) {
+    if (video) video.srcObject = null
+  }
 }
 
 function stopCamera() {
@@ -188,7 +190,13 @@ function startFaceTimer() {
   checkFace()
 }
 
-async function startCamera() {
+/**
+ * 打开摄像头（+ 可选麦克风）。
+ * - 仅在场检测/预览时：video only；
+ * - 答辩进行中（IN_PROGRESS）：video+audio 一次打开，同一路流同时用于在场检测、右下角录像小窗与 MediaRecorder。
+ *   麦克风被拒时自动降级为 video-only：在场检测继续，逐题录音会单独申请麦克风。
+ */
+async function startCamera(withAudio = false) {
   if (cameraState.value === 'live' || cameraState.value === 'starting') return
   if (!canDetect.value) return
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -199,34 +207,64 @@ async function startCamera() {
   const requestSeq = ++cameraRequestSeq
   cameraState.value = 'starting'
   cameraMessage.value = ''
+  let stream = null
+  let audioEnabled = Boolean(withAudio)
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 } },
-      audio: false,
-    })
-    if (requestSeq !== cameraRequestSeq) {
-      stream.getTracks().forEach((track) => track.stop())
-      return
-    }
-    cameraStream = stream
-    const video = videoRef.value
-    if (!video) {
-      releaseCamera()
-      cameraState.value = 'idle'
-      return
-    }
-    video.srcObject = stream
-    await video.play().catch(() => {})
-    cameraState.value = 'live'
-    presence.value = 'unknown'
-    startFaceTimer()
+    stream = await navigator.mediaDevices.getUserMedia(
+      audioEnabled
+        ? {
+            video: { width: { ideal: 640 }, height: { ideal: 360 } },
+            audio: { echoCancellation: true, noiseSuppression: true },
+          }
+        : { video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
+    )
   } catch (err) {
-    cameraState.value = 'blocked'
-    presence.value = 'unavailable'
-    cameraMessage.value =
-      err?.name === 'NotAllowedError'
-        ? '摄像头未授权，可在浏览器地址栏允许后重试'
-        : '摄像头不可用，不影响录音作答'
+    if (audioEnabled) {
+      audioEnabled = false
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        })
+        videoNote.value = '麦克风未授权，无法录制整场答辩录像；逐题录音会在作答时单独申请麦克风'
+      } catch (fallbackErr) {
+        handleMediaError(fallbackErr)
+        return
+      }
+    } else {
+      handleMediaError(err)
+      return
+    }
+  }
+  if (requestSeq !== cameraRequestSeq) {
+    if (stream) stream.getTracks().forEach((track) => track.stop())
+    return
+  }
+  cameraStream = stream
+  if (!videoRef.value) {
+    releaseCamera()
+    cameraState.value = 'idle'
+    return
+  }
+  bindStreamToVideos()
+  cameraState.value = 'live'
+  presence.value = 'unknown'
+  startFaceTimer()
+  if (audioEnabled) {
+    videoNote.value = ''
+    startVideoRecording()
+  }
+}
+
+function handleMediaError(err) {
+  cameraState.value = 'blocked'
+  presence.value = 'unavailable'
+  cameraMessage.value =
+    err?.name === 'NotAllowedError'
+      ? '摄像头未授权，可在浏览器地址栏允许后重试'
+      : '摄像头不可用，不影响录音作答'
+  if (canAnswer.value) {
+    videoNote.value = '摄像头/麦克风不可用，无法录制整场答辩录像；逐题录音仍可单独使用'
   }
 }
 
@@ -237,8 +275,319 @@ function retryFaceCheck() {
   }
   if (cameraState.value === 'live') {
     startFaceTimer()
+  } else if (isStudent.value && session.value?.status === 'IN_PROGRESS') {
+    // 答辩进行中重开摄像头要走「video+audio 一路流」，顺带恢复整场录像。
+    void ensureRecordingStream()
   } else {
     startCamera()
+  }
+}
+
+/** 摄像头卡片里的「开启摄像头」按钮：答辩进行中要同时恢复录像。 */
+function startCameraFromUi() {
+  if (isStudent.value && session.value?.status === 'IN_PROGRESS') void ensureRecordingStream()
+  else void startCamera()
+}
+
+/* ---------------- 答辩录像（MediaRecorder 整场录制，供教师复核） ---------------- */
+const previewVideoRef = ref(null)
+const videoRecorderState = ref('idle') // idle | recording | stopping
+const videoElapsedMs = ref(0)
+const videoNote = ref('')
+const videoUploadState = ref('') // '' | uploading | failed
+const videoUploadProgress = ref(0)
+const pendingVideoUpload = shallowRef(null) // { blob, durationMs, mimeType }: 上传失败时保留，刷新前可重试
+let mediaRecorder = null
+let videoChunks = []
+let videoRecorderTimer = null
+let videoStartedAt = 0
+
+const showVideoPreview = computed(() => isStudent.value && videoRecorderState.value === 'recording')
+const videoElapsedText = computed(() => {
+  const seconds = Math.floor(videoElapsedMs.value / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return minutes > 0 ? `${minutes}:${String(rest).padStart(2, '0')}` : `${rest}s`
+})
+const videoCardVisible = computed(
+  () =>
+    Boolean(session.value?.videoAvailable) ||
+    Boolean(pendingVideoUpload.value) ||
+    videoUploadState.value === 'uploading' ||
+    (isStudent.value && (canAnswer.value || videoRecorderState.value === 'recording')),
+)
+
+/** 小窗和摄像头卡片共用同一路 MediaStream（就是 MediaRecorder 正在录的那一路）。 */
+function bindStreamToVideos() {
+  if (!cameraStream) return
+  for (const video of [videoRef.value, previewVideoRef.value]) {
+    if (!video) continue
+    if (video.srcObject !== cameraStream) video.srcObject = cameraStream
+    if (typeof video.play === 'function') video.play().catch(() => {})
+  }
+}
+
+function pickVideoMimeType() {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return ''
+  const candidates = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
+  for (const type of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(type)) return type
+    } catch {
+      // 尝试下一个候选
+    }
+  }
+  return ''
+}
+
+function stopVideoRecorderTimer() {
+  if (videoRecorderTimer) {
+    clearInterval(videoRecorderTimer)
+    videoRecorderTimer = null
+  }
+}
+
+function cleanupVideoRecorder() {
+  stopVideoRecorderTimer()
+  mediaRecorder = null
+  videoChunks = []
+  videoRecorderState.value = 'idle'
+  videoElapsedMs.value = 0
+}
+
+function startVideoRecording() {
+  if (videoRecorderState.value === 'recording' || mediaRecorder) return
+  if (!isStudent.value || session.value?.status !== 'IN_PROGRESS') return
+  if (!cameraStream || !cameraStream.active) return
+  if (typeof MediaRecorder === 'undefined') {
+    videoNote.value = '当前浏览器不支持 MediaRecorder，无法录制整场答辩录像'
+    return
+  }
+  const hasVideo = cameraStream.getVideoTracks().length > 0
+  const hasAudio = cameraStream.getAudioTracks().length > 0
+  if (!hasVideo || !hasAudio) {
+    videoNote.value = '麦克风/摄像头轨道不完整，无法录制整场答辩录像'
+    return
+  }
+  try {
+    const mimeType = pickVideoMimeType()
+    const options = { videoBitsPerSecond: 1_000_000, audioBitsPerSecond: 64_000 }
+    if (mimeType) options.mimeType = mimeType
+    mediaRecorder = new MediaRecorder(cameraStream, options)
+    videoChunks = []
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) videoChunks.push(event.data)
+    }
+    // 轨道被外部停止（拔设备/浏览器策略）时录像会被动结束：把已录内容保留为待上传，不静默丢弃。
+    mediaRecorder.onstop = () => {
+      if (videoRecorderState.value !== 'recording') return
+      const chunks = videoChunks
+      const durationMs = Math.max(0, Date.now() - videoStartedAt)
+      const mimeType = mediaRecorder?.mimeType || 'video/webm'
+      cleanupVideoRecorder()
+      const blob = chunks.length ? new Blob(chunks, { type: mimeType }) : null
+      if (blob && blob.size) {
+        pendingVideoUpload.value = { blob, durationMs, mimeType }
+        videoUploadState.value = 'failed'
+        toast.info('录像已提前结束', '已录内容已保留，可点「重试上传」')
+      }
+    }
+    mediaRecorder.onerror = () => {
+      // 录像异常时尽量抢救已录 chunks（不静默丢弃），保留为待上传。
+      const chunks = videoChunks
+      const durationMs = Math.max(0, Date.now() - videoStartedAt)
+      const mimeType = mediaRecorder?.mimeType || 'video/webm'
+      cleanupVideoRecorder()
+      const blob = chunks.length ? new Blob(chunks, { type: mimeType }) : null
+      if (blob && blob.size) {
+        pendingVideoUpload.value = { blob, durationMs, mimeType }
+        videoUploadState.value = 'failed'
+        toast.info('录像异常结束', '已录内容已保留，可点「重试上传」')
+      }
+      videoNote.value = '浏览器录像中断，将只保留逐题录音与在场检测'
+      toast.error('录像中断', '浏览器录像失败；逐题录音与在场检测不受影响')
+    }
+    mediaRecorder.start(1000) // 每秒切一个 chunk，避免长时间只留一段超大内存
+    videoStartedAt = Date.now()
+    videoElapsedMs.value = 0
+    videoRecorderState.value = 'recording'
+    videoNote.value = ''
+    stopVideoRecorderTimer()
+    videoRecorderTimer = setInterval(() => {
+      if (videoRecorderState.value === 'recording') videoElapsedMs.value = Date.now() - videoStartedAt
+    }, 500)
+  } catch (err) {
+    cleanupVideoRecorder()
+    videoNote.value = '当前浏览器无法录制整场答辩录像，将只保留逐题录音与在场检测'
+  }
+}
+
+/** 结束录像并返回 { blob, durationMs, mimeType }（没有可上传内容时返回 null）。 */
+function finalizeVideoRecording() {
+  const recorder = mediaRecorder
+  if (!recorder || recorder.state === 'inactive') {
+    cleanupVideoRecorder()
+    return Promise.resolve(null)
+  }
+  const durationMs = Math.max(0, Date.now() - videoStartedAt)
+  const mimeType = recorder.mimeType || 'video/webm'
+  videoRecorderState.value = 'stopping'
+  stopVideoRecorderTimer()
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      const chunks = videoChunks
+      videoChunks = []
+      cleanupVideoRecorder()
+      const blob = chunks.length ? new Blob(chunks, { type: mimeType }) : null
+      resolve(blob && blob.size ? { blob, durationMs, mimeType } : null)
+    }
+    try {
+      recorder.addEventListener('stop', finish)
+      recorder.stop()
+    } catch {
+      finish()
+      return
+    }
+    setTimeout(finish, 3000) // onstop 兜底，避免个别浏览器不触发导致流程卡死
+  })
+}
+
+async function uploadVideoBlob(result, { silent = false } = {}) {
+  if (!result?.blob || !result.blob.size) return
+  pendingVideoUpload.value = result
+  videoUploadState.value = 'uploading'
+  videoUploadProgress.value = 0
+  try {
+    const updated = await api.uploadDefenseVideo(sessionId.value, result.blob, result.durationMs, {
+      onProgress: (percent) => {
+        videoUploadProgress.value = percent
+      },
+    })
+    pendingVideoUpload.value = null
+    videoUploadState.value = ''
+    videoUploadProgress.value = 0
+    // 后端返回的 SessionVO 若未带视频字段，本地兜底标记已上传，保证回放卡立即出现。
+    const patch = updated && typeof updated === 'object' && !Array.isArray(updated) ? { ...updated } : {}
+    if (patch.videoAvailable !== true) patch.videoAvailable = true
+    if (patch.videoDurationMs == null) patch.videoDurationMs = result.durationMs
+    if (patch.videoSizeBytes == null) patch.videoSizeBytes = result.blob.size
+    mergeSessionPatch(patch)
+    if (!silent) toast.ok('答辩录像已保存', '教师可在结果页回放复核')
+    if (!silent) await load(true)
+  } catch (err) {
+    videoUploadState.value = 'failed'
+    if (!silent) {
+      toast.error('录像上传失败', '录像已保留在本页，可点「重试上传」；刷新/关闭页面会丢失，请尽快重试')
+    }
+  }
+}
+
+function retryVideoUpload() {
+  const pending = pendingVideoUpload.value
+  if (!pending) return
+  void uploadVideoBlob(pending)
+}
+
+/* ---------------- 录像回放（鉴权 fetch → blob URL） ---------------- */
+const videoUrl = ref('')
+const videoLoading = ref(false)
+const videoLoadError = ref('')
+let videoUrlSeq = 0
+
+function revokeVideoUrl() {
+  videoUrlSeq += 1
+  if (videoUrl.value) {
+    URL.revokeObjectURL(videoUrl.value)
+    videoUrl.value = ''
+  }
+  videoLoading.value = false
+}
+
+async function loadDefenseVideo() {
+  if (!session.value?.videoAvailable) {
+    revokeVideoUrl()
+    return
+  }
+  const seq = ++videoUrlSeq
+  videoLoading.value = true
+  videoLoadError.value = ''
+  try {
+    const url = await api.defenseVideoBlobUrl(sessionId.value)
+    if (seq !== videoUrlSeq) {
+      URL.revokeObjectURL(url)
+      return
+    }
+    if (videoUrl.value) URL.revokeObjectURL(videoUrl.value)
+    videoUrl.value = url
+  } catch (err) {
+    if (seq === videoUrlSeq) videoLoadError.value = err?.message || '录像加载失败，可重试'
+  } finally {
+    if (seq === videoUrlSeq) videoLoading.value = false
+  }
+}
+
+function retryVideoLoad() {
+  void loadDefenseVideo()
+}
+
+/** 浏览器拿到了 blob URL 但无法解码（编码不支持/文件损坏）时的降级提示。 */
+function onVideoElementError() {
+  if (!videoUrl.value) return
+  videoLoadError.value = '浏览器无法播放该录像（编码不受支持或文件损坏），可尝试下载后用本地播放器打开'
+}
+
+function downloadDefenseVideo() {
+  if (!videoUrl.value) return
+  const link = document.createElement('a')
+  link.href = videoUrl.value
+  link.download = `答辩录像-${session.value?.studentName || sessionId.value}.webm`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function mergeSessionPatch(patch) {
+  if (!patch || typeof patch !== 'object') return
+  const next = { ...(session.value || {}), ...patch }
+  // 上传录像/结束答辩返回的可能是列表态 SessionVO（questions 为 null），别把已加载题目清空。
+  if (!Array.isArray(patch.questions) && Array.isArray(session.value?.questions)) next.questions = session.value.questions
+  session.value = next
+}
+
+watch(
+  () => session.value?.videoAvailable,
+  (available) => {
+    if (available) void loadDefenseVideo()
+    else revokeVideoUrl()
+  },
+)
+
+watch(showVideoPreview, async (visible) => {
+  if (!visible) return
+  await nextTick()
+  bindStreamToVideos()
+})
+
+/** IN_PROGRESS 时确保「一路 video+audio 流」：在场检测、录像小窗、MediaRecorder 共用。 */
+async function ensureRecordingStream() {
+  if (!isStudent.value || session.value?.status !== 'IN_PROGRESS') return
+  const hasAudio = Boolean(cameraStream && cameraStream.getAudioTracks?.().length)
+  if (cameraState.value === 'live' && hasAudio && cameraStream?.active) {
+    bindStreamToVideos()
+    startVideoRecording()
+    return
+  }
+  stopCamera()
+  await startCamera(true)
+}
+
+function onBeforeUnload(event) {
+  if (pendingVideoUpload.value || videoRecorderState.value === 'recording') {
+    event.preventDefault()
+    event.returnValue = ''
   }
 }
 
@@ -269,6 +618,7 @@ const recordPercent = computed(() => {
 
 let audioContext = null
 let audioStream = null
+let audioStreamOwned = false
 let audioSource = null
 let audioProcessor = null
 let audioSink = null
@@ -307,8 +657,10 @@ function releaseAudio() {
     audioSink = null
   }
   if (audioStream) {
-    audioStream.getTracks().forEach((track) => track.stop())
+    // 共享的麦克风轨道属于 cameraStream，由 stopCamera 统一停止；这里只释放自己单独申请的流。
+    if (audioStreamOwned) audioStream.getTracks().forEach((track) => track.stop())
     audioStream = null
+    audioStreamOwned = false
   }
   if (audioContext) {
     audioContext.close().catch(() => {})
@@ -405,17 +757,27 @@ async function startRecording(question) {
     toast.error('无法录音', '当前浏览器不支持 AudioContext')
     return
   }
-  let stream
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    })
-  } catch (err) {
-    toast.error('无法开始录音', err?.name === 'NotAllowedError' ? '请在浏览器中允许使用麦克风' : '麦克风不可用')
-    return
+  let stream = null
+  let ownedStream = false
+  // 答辩进行中已有一路 video+audio 流在录制整场，逐题 WAV 直接复用其中的麦克风轨道（避免重复申请设备）。
+  const sharedTrack = cameraStream?.getAudioTracks?.()[0]
+  if (sharedTrack && sharedTrack.readyState === 'live' && typeof MediaStream !== 'undefined') {
+    stream = new MediaStream([sharedTrack])
+  }
+  if (!stream) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      })
+      ownedStream = true
+    } catch (err) {
+      toast.error('无法开始录音', err?.name === 'NotAllowedError' ? '请在浏览器中允许使用麦克风' : '麦克风不可用')
+      return
+    }
   }
   try {
     audioStream = stream
+    audioStreamOwned = ownedStream
     audioContext = new AudioContextClass()
     if (audioContext.state === 'suspended') await audioContext.resume().catch(() => {})
     audioSource = audioContext.createMediaStreamSource(stream)
@@ -538,10 +900,11 @@ async function doFinish() {
   if (recording.value || uploadQuestionId.value) {
     toast.info('请先结束当前录音', '录音结束并上传完成后再结束答辩')
     return
-  }  if (
+  }
+  if (
     !(await confirm({
       title: '结束答辩',
-      message: '结束后将不能继续录音作答，教师会基于已转写的回答评分。确定结束吗？',
+      message: '结束后将不能继续录音作答，教师会基于已转写的回答评分；整场答辩录像会一并保存供教师复核。确定结束吗？',
       confirmText: '结束答辩',
     }))
   ) {
@@ -549,11 +912,23 @@ async function doFinish() {
   }
   busy.value = 'finish'
   try {
-    await api.finishDefense(sessionId.value)
-    toast.ok('答辩已结束', '等待教师完成评分')
+    // 1) 先收尾录像：停止录制 → 有内容则上传；上传失败会把 blob 留在 pendingVideoUpload，不丢录像。
+    const videoResult = await finalizeVideoRecording()
+    if (videoResult) await uploadVideoBlob(videoResult)
+    // 2) 再结束答辩（即使录像上传失败也允许结束，稍后可在录像卡重试上传）。
+    const updated = await api.finishDefense(sessionId.value)
+    if (updated && typeof updated === 'object' && !Array.isArray(updated)) mergeSessionPatch(updated)
+    toast.ok(
+      '答辩已结束',
+      pendingVideoUpload.value ? '录像尚未上传成功，请在「答辩录像」卡重试上传' : '等待教师完成评分',
+    )
     await load(true)
   } catch (err) {
     toastError(err, '结束答辩失败')
+    // 结束失败（如网络中断）时答辩可能仍在进行中：重新开启录像，避免后续内容漏录。
+    if (session.value?.status === 'IN_PROGRESS' && cameraStream?.active && videoRecorderState.value !== 'recording') {
+      startVideoRecording()
+    }
   } finally {
     busy.value = ''
   }
@@ -602,6 +977,14 @@ function fmtDuration(ms) {
   return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`
 }
 
+function sizeText(bytes) {
+  const value = Number(bytes) || 0
+  if (value <= 0) return '—'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 ** 2).toFixed(1)} MB`
+}
+
 function answerText(status) {
   return { TRANSCRIBED: '已转写', TRANSCRIBING: '转写中', UPLOADED: '已上传', FAILED: '转写失败' }[status] || '未作答'
 }
@@ -648,18 +1031,37 @@ watch(
         recordElapsedMs.value = 0
         releaseAudio()
       }
+      // 录像仍在进行（例如另一标签页结束了答辩）：先收尾并保留 blob，提示用户重试上传。
+      if (videoRecorderState.value === 'recording') {
+        void finalizeVideoRecording().then((result) => {
+          if (result?.blob?.size) {
+            pendingVideoUpload.value = result
+            videoUploadState.value = 'failed'
+            toast.info('答辩已结束', '本页录像尚未上传，可在「答辩录像」卡重试上传')
+          }
+        })
+      }
       stopCamera()
       return
     }
-    if (isStudent.value && ['READY', 'IN_PROGRESS'].includes(status) && cameraState.value !== 'live') {
+    if (!isStudent.value) return
+    if (status === 'IN_PROGRESS') {
+      await nextTick()
+      void ensureRecordingStream()
+      return
+    }
+    if (status === 'READY' && cameraState.value !== 'live') {
       await nextTick()
       if (canDetect.value && cameraState.value !== 'live') void startCamera()
     }
   },
 )
 
-// 同一路由切换 sessionId 时复用组件：重置检测状态并重新加载。
+// 同一路由切换 sessionId 时复用组件：重置检测/录像状态并重新加载。
 watch(sessionId, async () => {
+  revokeVideoUrl()
+  if (videoRecorderState.value === 'recording') void finalizeVideoRecording()
+  else cleanupVideoRecorder()
   stopCamera()
   cameraState.value = 'idle'
   presence.value = 'unknown'
@@ -669,16 +1071,31 @@ watch(sessionId, async () => {
   session.value = null
   await load()
   await nextTick()
-  if (isStudent.value && canDetect.value) void startCamera()
+  if (!isStudent.value) return
+  if (session.value?.status === 'IN_PROGRESS') void ensureRecordingStream()
+  else if (canDetect.value) void startCamera()
 })
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', onBeforeUnload)
   await load()
   await nextTick()
-  if (isStudent.value && canDetect.value) void startCamera()
+  if (!isStudent.value) return
+  if (session.value?.status === 'IN_PROGRESS') void ensureRecordingStream()
+  else if (canDetect.value) void startCamera()
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  revokeVideoUrl()
+  // 离开页面也不丢录像：能拿到 blob 就静默后台上传（失败时页面已卸载，无法再提示）。
+  if (videoRecorderState.value === 'recording') {
+    void finalizeVideoRecording().then((result) => {
+      if (result?.blob?.size) void uploadVideoBlob(result, { silent: true })
+    })
+  } else {
+    cleanupVideoRecorder()
+  }
   stopCamera()
   if (recordingQuestionId.value) {
     recordingQuestionId.value = ''
@@ -894,8 +1311,8 @@ onBeforeUnmount(() => {
           <div class="card">
             <div class="card__head">
               <div>
-                <h3><Icon name="shield" :size="15" style="margin-right: 6px; vertical-align: -2px" />在场检测</h3>
-                <div class="small dim">只判断画面中是否有人，用于记录在场情况</div>
+                <h3><Icon name="shield" :size="15" style="margin-right: 6px; vertical-align: -2px" />在场检测与录像</h3>
+                <div class="small dim">摄像头用于在场检测与答辩录像，录像仅教师可复核</div>
               </div>
               <span class="pill" :class="presenceBadge.tone" style="margin-left: auto">{{ presenceBadge.text }}</span>
             </div>
@@ -907,6 +1324,9 @@ onBeforeUnmount(() => {
                     <Icon name="eye" :size="26" />
                     <span class="small">{{ cameraHint }}</span>
                   </div>
+                  <div v-if="videoRecorderState === 'recording'" class="cam-frame__rec">
+                    <span class="rec-dot" />REC {{ videoElapsedText }}
+                  </div>
                 </div>
 
                 <div class="row row--wrap">
@@ -914,13 +1334,18 @@ onBeforeUnmount(() => {
                     v-if="cameraState !== 'live'"
                     class="btn btn--primary btn--sm"
                     :disabled="!canDetect || cameraState === 'starting' || cameraState === 'unsupported'"
-                    @click="startCamera"
+                    @click="startCameraFromUi"
                   >
                     <Icon name="eye" :size="14" />开启摄像头
                   </button>
-                  <button v-else class="btn btn--ghost btn--sm" @click="stopCamera">
+                  <button
+                    v-else-if="videoRecorderState !== 'recording'"
+                    class="btn btn--ghost btn--sm"
+                    @click="stopCamera"
+                  >
                     <Icon name="x" :size="14" />关闭摄像头
                   </button>
+                  <span v-else class="pill pill--danger"><span class="rec-dot" />录像中，结束时自动停止</span>
                   <button
                     v-if="faceUnavailable && canDetect"
                     class="btn btn--ghost btn--sm"
@@ -934,7 +1359,9 @@ onBeforeUnmount(() => {
 
                 <div class="alert alert--info" style="align-items: flex-start">
                   <Icon name="lock" :size="15" style="flex: none; margin-top: 2px" />
-                  <span>隐私提示：摄像头仅用于在场检测，画面不留存，也不做身份识别。</span>
+                  <span>
+                    隐私提示：摄像头与麦克风用于在场检测和整场答辩录像，录像仅教师可复核，不做身份识别、不对外公开。
+                  </span>
                 </div>
                 <div v-if="faceUnavailable" class="alert alert--warn" style="align-items: flex-start">
                   <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
@@ -945,8 +1372,8 @@ onBeforeUnmount(() => {
                 <div class="alert alert--info" style="align-items: flex-start">
                   <Icon name="lock" :size="15" style="flex: none; margin-top: 2px" />
                   <span>
-                    在场检测由学生在自己的设备上开启摄像头完成，画面不留存；教师端只查看服务端记录的检测结果，
-                    避免用教师本机摄像头污染该学生的在场数据。
+                    学生在自己的设备上开启摄像头完成在场检测与整场录像，录像仅教师可复核；教师端不启用本机摄像头，
+                    只查看服务端记录与录像回放，避免污染该学生的在场数据。
                   </span>
                 </div>
                 <dl class="dl">
@@ -957,10 +1384,89 @@ onBeforeUnmount(() => {
                   </dd>
                   <dt>未检测次数</dt>
                   <dd class="num">{{ session.faceMissCount ?? 0 }}</dd>
+                  <dt>录像</dt>
+                  <dd>
+                    <span v-if="session.videoAvailable">
+                      {{ fmtDuration(session.videoDurationMs) }} · {{ sizeText(session.videoSizeBytes) }}
+                    </span>
+                    <span v-else class="dim">暂无录像</span>
+                  </dd>
                 </dl>
               </template>
             </div>
           </div>
+
+          <div v-if="videoCardVisible" class="card">
+            <div class="card__head">
+              <div>
+                <h3><Icon name="eye" :size="15" style="margin-right: 6px; vertical-align: -2px" />答辩录像</h3>
+                <div class="small dim">整场录像（画面+声音）留存供教师复核，仅本场答辩可见</div>
+              </div>
+              <span v-if="videoRecorderState === 'recording'" class="pill pill--danger" style="margin-left: auto">
+                <span class="rec-dot" />录像中 {{ videoElapsedText }}
+              </span>
+              <span v-else-if="session.videoAvailable" class="pill pill--ok" style="margin-left: auto">已保存</span>
+              <span v-else-if="videoUploadState === 'failed'" class="pill pill--danger" style="margin-left: auto">待上传</span>
+            </div>
+            <div class="card__body" style="display: grid; gap: 10px">
+              <div v-if="videoUploadState === 'uploading'">
+                <div class="bar"><div class="bar__fill" :style="{ width: videoUploadProgress + '%' }" /></div>
+                <div class="small dim num" style="margin-top: 4px">录像上传中 {{ videoUploadProgress }}%</div>
+              </div>
+              <div
+                v-else-if="pendingVideoUpload && videoUploadState === 'failed'"
+                class="alert alert--danger"
+                style="align-items: flex-start"
+              >
+                <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                <div style="min-width: 0">
+                  <strong>录像上传失败</strong>
+                  <div class="small" style="margin-top: 4px">
+                    录像暂存在本页内存中（{{ fmtDuration(pendingVideoUpload.durationMs) }} ·
+                    {{ sizeText(pendingVideoUpload.blob.size) }}）；刷新或关闭页面会丢失，请重试上传。
+                  </div>
+                  <button class="btn btn--primary btn--sm" style="margin-top: 8px" @click="retryVideoUpload">
+                    <Icon name="refresh" :size="14" />重试上传
+                  </button>
+                </div>
+              </div>
+              <div v-else-if="videoRecorderState === 'recording'" class="alert alert--info" style="align-items: flex-start">
+                <Icon name="eye" :size="15" style="flex: none; margin-top: 2px" />
+                <span>正在录制整场答辩（画面与声音），结束答辩后自动上传，仅供教师复核。</span>
+              </div>
+              <div v-else-if="canAnswer && videoNote" class="alert alert--warn" style="align-items: flex-start">
+                <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                <span>{{ videoNote }}</span>
+              </div>
+              <div v-else-if="canAnswer" class="small dim">正在准备录像…</div>
+
+              <template v-if="session.videoAvailable">
+                <div v-if="videoLoading" class="skeleton" style="height: 180px" />
+                <div v-else-if="videoLoadError" class="alert alert--warn" style="align-items: flex-start">
+                  <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                  <div style="min-width: 0">
+                    <strong>录像加载失败</strong>
+                    <div class="small" style="margin-top: 4px">{{ videoLoadError }}</div>
+                    <button class="btn btn--ghost btn--sm" style="margin-top: 8px" @click="retryVideoLoad">
+                      <Icon name="refresh" :size="14" />重试加载
+                    </button>
+                  </div>
+                </div>
+                <template v-else-if="videoUrl">
+                  <video :src="videoUrl" controls playsinline class="video-player" @error="onVideoElementError" />
+                  <div class="row row--wrap small dim">
+                    <span>时长 {{ fmtDuration(session.videoDurationMs) }}</span>
+                    <span>大小 {{ sizeText(session.videoSizeBytes) }}</span>
+                    <span class="spacer" />
+                    <button class="btn btn--ghost btn--sm" @click="downloadDefenseVideo">
+                      <Icon name="download" :size="14" />下载录像
+                    </button>
+                  </div>
+                </template>
+              </template>
+            </div>
+          </div>
+
 
           <div class="card">
             <div class="card__head">
@@ -997,6 +1503,15 @@ onBeforeUnmount(() => {
         </aside>
       </div>
     </template>
+
+    <!-- 右下角录像小窗：显示的就是 MediaRecorder 正在录制的那一路流 -->
+    <div v-if="showVideoPreview" class="rec-window">
+      <video ref="previewVideoRef" autoplay muted playsinline class="rec-window__video" />
+      <div class="rec-window__meta">
+        <span class="rec-window__rec"><span class="rec-dot" />REC {{ videoElapsedText }}</span>
+        <span class="rec-window__hint">正在录像 · 仅供教师复核</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1025,6 +1540,78 @@ onBeforeUnmount(() => {
   padding: 16px;
   color: #c7d2fe;
   text-align: center;
+}
+
+.cam-frame__rec {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(11, 16, 32, 0.72);
+  color: #fca5a5;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.video-player {
+  display: block;
+  width: 100%;
+  border-radius: var(--r);
+  background: #000;
+}
+
+/* 右下角录像小窗 */
+.rec-window {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 45;
+  width: 236px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(11, 16, 32, 0.96);
+  box-shadow: var(--shadow-lg);
+}
+
+.rec-window__video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #000;
+}
+
+.rec-window__meta {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+
+.rec-window__rec {
+  display: flex;
+  align-items: center;
+  color: #fca5a5;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.rec-window__hint {
+  color: #c7d2fe;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .rec-window {
+    right: 12px;
+    bottom: 12px;
+    width: 168px;
+  }
 }
 
 .q-text {

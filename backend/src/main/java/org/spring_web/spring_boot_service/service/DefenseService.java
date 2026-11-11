@@ -5,12 +5,14 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -80,6 +82,10 @@ public class DefenseService {
     private static final List<String> ACTIVE_SESSION_STATUSES = List.of("CREATED", "READY", "IN_PROGRESS");
     /** 单题录音上限：契约 B4 为 50MB。 */
     private static final long MAX_AUDIO_BYTES = 50L * 1024 * 1024;
+    /** 整场答辩录像上限：300MB（MediaRecorder 的 webm 一般几 MB~几十 MB，留足余量）。 */
+    private static final long MAX_VIDEO_BYTES = 300L * 1024 * 1024;
+    /** 允许的录像扩展名（浏览器偶尔不给 video/* 的 content-type，用扩展名兜底）。 */
+    private static final List<String> VIDEO_EXTENSIONS = List.of(".webm", ".mp4");
     private static final String DEFAULT_LANGUAGE = "zh-CN";
     private static final String DEFAULT_QUESTION_TYPE = "DESIGN";
     private static final String DEFAULT_DIFFICULTY = "MEDIUM";
@@ -292,6 +298,81 @@ public class DefenseService {
         answer.setUpdatedAt(Times.now());
         answerMapper.updateById(answer);
         return toQuestionVo(question, answer, isOfferingOwner(session));
+    }
+
+    // ---------------------------------------------------------------- 整场录像：上传 / 回放
+
+    /**
+     * 上传整场答辩录像（前端 MediaRecorder 录制的 webm）。
+     *
+     * <p>允许在 {@code IN_PROGRESS}（结束前上传）或 {@code COMPLETED}（结束补传）两个状态上传；
+     * 录像只用于教师复核，与逐题音频（ASR 用）分开存（purpose=DEFENSE_VIDEO），
+     * 上传成功只更新会话的录像元数据，不改答辩状态。</p>
+     *
+     * <p>faceCheck 每 3 秒会更新会话，上传录像很容易撞上乐观锁：这里重载后重试一次，
+     * 仍失败才抛 40901（前端可重试上传，文件存储层有秒传不会重复占盘）。</p>
+     */
+    public DefenseDtos.SessionVO uploadVideo(String sessionId, MultipartFile file, Long durationMs) {
+        DefenseSession session = loadSession(sessionId);
+        assertVisible(session);
+        BizAssert.rule("IN_PROGRESS".equals(session.getStatus()) || "COMPLETED".equals(session.getStatus()),
+                "当前状态不允许上传答辩录像");
+        BizAssert.param(file != null && !file.isEmpty(), "录像文件不能为空");
+        if (!isVideo(file)) {
+            throw new BizException(ErrorCode.FILE_INVALID, "只支持视频文件（webm / mp4）");
+        }
+
+        FileObject stored = fileStorage.store(file, "DEFENSE_VIDEO", null, MAX_VIDEO_BYTES);
+        Long duration = durationMs == null ? null : Math.max(0L, durationMs);
+        if (!applyVideo(session, stored, duration)) {
+            DefenseSession latest = loadSession(String.valueOf(session.getId()));
+            BizAssert.rule("IN_PROGRESS".equals(latest.getStatus()) || "COMPLETED".equals(latest.getStatus()),
+                    "当前状态不允许上传答辩录像");
+            if (!applyVideo(latest, stored, duration)) {
+                throw new BizException(ErrorCode.CONFLICT, "录像信息保存失败，请重试");
+            }
+            session = latest;
+        }
+        return buildDetailVo(session, isOfferingOwner(session));
+    }
+
+    /**
+     * 取答辩录像供回放/下载。
+     *
+     * <p>返回定位信息而不是字节数组：视频可达数百 MB，由 Controller 用
+     * {@code FileSystemResource} 流式输出，避免整段读进内存。</p>
+     */
+    public VideoDownload streamVideo(String sessionId) {
+        DefenseSession session = loadSession(sessionId);
+        assertVisible(session);
+        if (session.getVideoFileId() == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "暂无答辩录像");
+        }
+        FileObject file = BizAssert.found(fileObjectMapper.selectById(session.getVideoFileId()), "答辩录像");
+        Path path = BizAssert.found(fileStorage.locate(file), "答辩录像");
+        return new VideoDownload(file.getFilename(), file.getContentType(), path);
+    }
+
+    /** 写入录像元数据并 updateById；返回 false 表示乐观锁冲突，由调用方重载重试。 */
+    private boolean applyVideo(DefenseSession session, FileObject stored, Long durationMs) {
+        LocalDateTime now = Times.now();
+        session.setVideoFileId(stored.getId());
+        session.setVideoDurationMs(durationMs);
+        session.setVideoSizeBytes(stored.getSizeBytes());
+        session.setVideoUploadedAt(now);
+        session.setUpdatedAt(now);
+        return sessionMapper.updateById(session) == 1;
+    }
+
+    /** content-type 以 video/ 开头，或扩展名是 webm / mp4。 */
+    private boolean isVideo(MultipartFile file) {
+        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
+        if (contentType.startsWith("video/")) {
+            return true;
+        }
+        String filename = file.getOriginalFilename() == null
+                ? "" : file.getOriginalFilename().toLowerCase(Locale.ROOT);
+        return VIDEO_EXTENSIONS.stream().anyMatch(filename::endsWith);
     }
 
     // ---------------------------------------------------------------- 在场检测
@@ -747,7 +828,11 @@ public class DefenseService {
                 Times.offset(session.getEvaluatedAt()),
                 session.getDurationMs(),
                 session.getVersion(),
-                questions);
+                questions,
+                session.getVideoFileId() == null ? null : String.valueOf(session.getVideoFileId()),
+                session.getVideoDurationMs(),
+                session.getVideoSizeBytes(),
+                session.getVideoFileId() != null);
     }
 
     private List<DefenseDtos.QuestionVO> questionVos(DefenseSession session, boolean teacher) {
@@ -901,6 +986,10 @@ public class DefenseService {
     private String clip(String text, int maxLength) {
         String trimmed = text.trim();
         return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength);
+    }
+
+    /** 答辩录像定位信息（Controller 用 FileSystemResource 流式输出，不把视频读进内存）。 */
+    public record VideoDownload(String filename, String contentType, Path path) {
     }
 
     /** AI 返回的单道答辩题（落库前的内存结构）。 */

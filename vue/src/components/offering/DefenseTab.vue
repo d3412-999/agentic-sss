@@ -220,7 +220,12 @@ onMounted(load)
                 <div class="table__primary">{{ row.studentName || '—' }}</div>
                 <div class="table__sub mono">{{ row.studentNo || '—' }}</div>
               </td>
-              <td class="ta-c"><StatusPill :status="row.status" /></td>
+              <td class="ta-c">
+                <StatusPill :status="row.status" />
+                <div v-if="row.videoAvailable" class="small dim" style="margin-top: 4px">
+                  <Icon name="eye" :size="12" /> 已录像
+                </div>
+              </td>
               <td class="ta-c num mono">{{ row.answeredCount ?? 0 }} / {{ row.questionCount ?? 0 }}</td>
               <td class="ta-c num mono" style="font-weight: 650">{{ row.score ?? '—' }}</td>
               <td class="ta-c small dim">{{ fmt(row.startedAt) }}</td>

@@ -1,4 +1,4 @@
-import { request, upload, download, toQuery, newIdempotencyKey } from './http'
+import { request, upload, download, fetchBlobUrl, toQuery, newIdempotencyKey } from './http'
 import { session } from '../stores/session'
 
 /**
@@ -137,6 +137,16 @@ export const api = {
     }),
   faceCheck: (sessionId, imageBase64) =>
     request(`/defense/sessions/${sessionId}/face-check`, { method: 'POST', body: { imageBase64 } }),
+  // 整场答辩录像（webm）：multipart 字段名 file + query durationMs；失败时调用方需保留 blob 以便重试。
+  uploadDefenseVideo: (sessionId, video, durationMs, { onProgress } = {}) => {
+    let file = video
+    if (typeof File !== 'undefined' && video instanceof Blob && !(video instanceof File)) {
+      file = new File([video], `defense-${sessionId}.webm`, { type: video.type || 'video/webm' })
+    }
+    return upload(`/defense/sessions/${sessionId}/video`, { file, query: { durationMs }, onProgress })
+  },
+  // 录像需要 Authorization 头，不能直接给 <video src>，先 fetch 成 blob URL 再播放。
+  defenseVideoBlobUrl: (sessionId) => fetchBlobUrl(`/defense/sessions/${sessionId}/video`),
   finishDefense: (sessionId) => request(`/defense/sessions/${sessionId}/finish`, { method: 'POST' }),
   evaluateDefense: (sessionId) => request(`/defense/sessions/${sessionId}/evaluate`, { method: 'POST' }),
   studentDefense: (selectionId) => request(`/student/defense/selections/${selectionId}`),

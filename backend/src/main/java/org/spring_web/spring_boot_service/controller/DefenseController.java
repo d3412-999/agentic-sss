@@ -2,11 +2,21 @@ package org.spring_web.spring_boot_service.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.common.Result;
 import org.spring_web.spring_boot_service.dto.DefenseDtos;
 import org.spring_web.spring_boot_service.service.DefenseService;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.InvalidMediaTypeException;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -77,6 +87,57 @@ public class DefenseController {
             @PathVariable String sessionId,
             @RequestBody DefenseDtos.FaceCheckRequest request) {
         return Result.ok(defenseService.faceCheck(sessionId, request.imageBase64()));
+    }
+
+    @Operation(summary = "上传整场答辩录像（multipart file + durationMs），返回最新会话")
+    @PostMapping(value = "/api/v1/defense/sessions/{sessionId}/video",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<DefenseDtos.SessionVO> uploadVideo(
+            @PathVariable String sessionId,
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(value = "durationMs", required = false) Long durationMs) {
+        return Result.ok(defenseService.uploadVideo(sessionId, file, durationMs));
+    }
+
+    @Operation(summary = "答辩录像回放：登录鉴权后以 inline 流式输出")
+    @GetMapping("/api/v1/defense/sessions/{sessionId}/video")
+    public ResponseEntity<Resource> video(@PathVariable String sessionId) {
+        DefenseService.VideoDownload download = defenseService.streamVideo(sessionId);
+        if (download == null || download.path() == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "文件不存在");
+        }
+        String encoded = URLEncoder.encode(
+                download.filename() == null ? "defense-video.webm" : download.filename(),
+                StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .contentType(videoMediaType(download.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename*=UTF-8''" + encoded)
+                .body(new FileSystemResource(download.path()));
+    }
+
+    /**
+     * 从存储的 Content-Type 得到可回放的视频媒体类型。
+     *
+     * <p>浏览器 MediaRecorder 上传的 part Content-Type 常带编码参数
+     * （{@code video/webm;codecs=vp8,opus}），而 {@link MediaType} 解析不接受逗号 token，
+     * 这里只保留 type/subtype；非 video/* 或解析失败统一兜底 video/webm（本接口只回放录像）。</p>
+     */
+    private MediaType videoMediaType(String contentType) {
+        MediaType fallback = MediaType.parseMediaType("video/webm");
+        if (contentType == null || contentType.isBlank()) {
+            return fallback;
+        }
+        String value = contentType;
+        int semicolon = value.indexOf(';');
+        if (semicolon >= 0) {
+            value = value.substring(0, semicolon);
+        }
+        try {
+            MediaType parsed = MediaType.parseMediaType(value.trim());
+            return "video".equalsIgnoreCase(parsed.getType()) ? parsed : fallback;
+        } catch (InvalidMediaTypeException ex) {
+            return fallback;
+        }
     }
 
     @Operation(summary = "结束答辩（IN_PROGRESS → COMPLETED）")
