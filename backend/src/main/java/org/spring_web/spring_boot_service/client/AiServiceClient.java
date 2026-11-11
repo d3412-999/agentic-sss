@@ -3,12 +3,17 @@ package org.spring_web.spring_boot_service.client;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Map;
+import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
 import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.config.SssProperties;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.InvalidMediaTypeException;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -55,6 +60,53 @@ public class AiServiceClient {
         return post("/defense/evaluate", payload);
     }
 
+    /**
+     * 答辩语音转写（契约 A1）：multipart 上传整段音频，返回
+     * {@code text / segments / durationMs / confidence / provider / model}。
+     *
+     * <p>音频由前端生成 WAV（16k mono PCM16）上传；失败统一转 50301，
+     * 由 DefenseService 把作答标记为 FAILED，绝不伪造转写文本。</p>
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> transcribeAudio(byte[] bytes, String filename,
+                                               String contentType, String language) {
+        BizAssert.param(bytes != null && bytes.length > 0, "音频内容不能为空");
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        String safeName = safeFilename(filename);
+        ByteArrayResource audio = new ByteArrayResource(bytes) {
+            @Override
+            public String getFilename() {
+                return safeName;
+            }
+        };
+        builder.part("file", audio).contentType(mediaType(contentType));
+        if (StringUtils.hasText(language)) {
+            builder.part("language", language);
+        }
+        try {
+            Object body = restClient.post()
+                    .uri(PREFIX + "/asr/transcribe")
+                    .contentType(MediaType.MULTIPART_FORM_DATA)
+                    .body(builder.build())
+                    .retrieve()
+                    .body(Map.class);
+            return body instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+        } catch (RestClientException | IllegalStateException ex) {
+            throw new BizException(ErrorCode.AI_UNAVAILABLE, "AI 服务暂不可用：" + ex.getMessage());
+        }
+    }
+
+    /**
+     * 摄像头在场检测（契约 A3）：只判画面里有没有人脸，不做身份识别，也不落盘。
+     *
+     * <p>请求体 {@code {"imageBase64": "..."}}；失败统一转 50301，
+     * 由 DefenseService 决定「不落库、前端降级提示」。</p>
+     */
+    public Map<String, Object> facePresence(String imageBase64) {
+        BizAssert.param(StringUtils.hasText(imageBase64), "画面内容不能为空");
+        return post("/face/presence", Map.of("imageBase64", imageBase64));
+    }
+
     /** 21.3：课程设计报告评审。 */
     public Map<String, Object> evaluateReport(Map<String, Object> payload) {
         return post("/report/evaluate", payload);
@@ -83,6 +135,29 @@ public class AiServiceClient {
     /** 从模板库删除文档。 */
     public void deleteTemplate(String docId) {
         delete("/template/" + docId);
+    }
+
+    /** 只保留文件名本身，去掉路径与换行/引号，避免拼进 multipart 头时破坏分隔符。 */
+    private String safeFilename(String filename) {
+        String name = filename == null ? "" : filename.replace('\\', '/');
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) {
+            name = name.substring(slash + 1);
+        }
+        name = name.replace("\r", "").replace("\n", "").replace("\"", "");
+        return name.isBlank() ? "answer.wav" : name;
+    }
+
+    /** Content-Type 非法时退回二进制流，不让一个脏头导致整个转写请求 500。 */
+    private MediaType mediaType(String contentType) {
+        if (!StringUtils.hasText(contentType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        try {
+            return MediaType.parseMediaType(contentType);
+        } catch (InvalidMediaTypeException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
     }
 
     @SuppressWarnings("unchecked")

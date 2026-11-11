@@ -56,6 +56,12 @@ const routes = [
     meta: { title: '成绩中心', roles: ['TEACHER', 'STUDENT'] },
   },
   {
+    path: '/defense/:sessionId',
+    name: 'defense',
+    component: () => import('../views/DefenseView.vue'),
+    meta: { title: '答辩', roles: ['TEACHER', 'STUDENT'] },
+  },
+  {
     path: '/tasks',
     name: 'tasks',
     component: () => import('../views/TasksView.vue'),

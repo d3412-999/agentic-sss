@@ -68,6 +68,21 @@ public class DefenseSession {
     private String summary;
 
     /**
+     * 最近一次在场检测：1 有人 / 0 无人（null 表示尚未检测）
+     */
+    private Integer facePresent;
+
+    /**
+     * 最近一次在场检测时间
+     */
+    private LocalDateTime faceCheckedAt;
+
+    /**
+     * 累计未检测到人的次数（只增不减，供教师回看）
+     */
+    private Integer faceMissCount;
+
+    /**
      * 开始时间
      */
     private LocalDateTime startedAt;

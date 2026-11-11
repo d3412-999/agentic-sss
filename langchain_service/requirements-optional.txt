@@ -1,0 +1,13 @@
+# 可选依赖：仅当启用真实 provider 时需要，基础 requirements.txt 不包含它们，
+# 保证 mock 模式与 CI / 离线环境无需安装也能跑通全部接口与测试。
+#
+#   ASR_PROVIDER=sherpa_onnx  -> 需要 sherpa-onnx + 本地模型（ASR_MODEL_DIR）
+#   FACE_PROVIDER=opencv      -> 需要 opencv-python-headless（含 numpy）
+#
+# 安装：pip install -r requirements-optional.txt
+# 说明：sherpa-onnx 的模型文件不随 pip 包提供，需自行下载到 ASR_MODEL_DIR
+#       （默认 ./models/sherpa-onnx-paraformer-zh，至少包含 tokens.txt 与 .onnx）；
+#       OpenCV 的 haarcascade 人脸模型随 opencv 包内置，无需额外文件。
+
+sherpa-onnx>=1.10
+opencv-python-headless>=4.9

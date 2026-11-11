@@ -53,6 +53,11 @@ public class DefenseAnswer {
     private BigDecimal asrConfidence;
 
     /**
+     * 转写模型（如 paraformer-zh，便于排障与结果追溯）
+     */
+    private String asrModel;
+
+    /**
      * 状态：UPLOADED / TRANSCRIBING / TRANSCRIBED / FAILED
      */
     private String status;

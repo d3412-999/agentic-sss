@@ -68,7 +68,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 | 成绩 | 三维加权算分、人工调整（原因入审计）、发布/撤销、异步导出 CSV、学生查询 | ✅ |
 | 通知与任务 | 站内通知、跨页面任务中心（进度轮询、取消、结果查看） | ✅ |
 | 前端工作台 | 12 个页面、深色主题、命令面板（Ctrl K）、响应式布局、骨架屏与空态 | ✅ |
-| 语音答辩 | WebSocket 语音流、ASR 转写、AI 出题与评分 | 🚧 表结构与客户端方法已就绪 |
+| 语音答辩 | 教师发起答辩（AI 出题）→ 学生逐题录音 → ASR 转写 → AI 评分 → 成绩；摄像头「在场检测」（只判画面里有没有人，不落库图片） | ✅ 主链路已实现（实时流式代理、人脸身份识别为下一阶段） |
 | 静态分析 | Checkstyle / PMD / SpotBugs 调度与问题明细落库 | 🚧 未实现 |
 
 ## 界面
@@ -77,10 +77,11 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 |---|---|---|
 | 概览 `/` | 全员 | 角色化 KPI、教学班进度、材料流水线、通知与流程说明 |
 | 教学班 `/offerings` | 教师 | 状态筛选、新建开课抽屉、课程模板、发布阻塞项逐条提示 |
-| 开课工作台 `/offerings/:id` | 教师 | 概览 / 题目 / 学生 / 成绩 / 设置 五个页签 |
+| 开课工作台 `/offerings/:id` | 教师 | 概览 / 题目 / 学生 / 成绩 / 优秀作品 / 答辩 / 设置 七个页签 |
 | 我的课程 `/courses` | 学生 | 课程卡片、选题窗口、限额与不可选原因（后端枚举码已翻译成中文） |
 | 选题中心 `/courses/:id/topics` | 学生 | 卡片化题目、多选、名额可视化、详情抽屉 |
-| 我的选题 `/selections` | 学生 | 五步材料流水线、拖拽上传（带进度）、版本历史、重新评审、退选 |
+| 我的选题 `/selections` | 学生 | 五步材料流水线、拖拽上传（带进度）、版本历史、重新评审、退选、进入答辩 |
+| 答辩 `/defense/:sessionId` | 教师/学生 | 逐题录音作答（WAV 上传 → ASR 转写）、摄像头在场检测、结束答辩、教师 AI 评分 |
 | 成绩中心 `/grades` | 教师/学生 | 教师：摘要+表格+调整/发布/导出；学生：分项与综合分构成 |
 | 任务中心 `/tasks` | 全员 | 本机发起的异步任务、进度、取消、结果 JSON |
 | 通知 / 设置 | 全员 | 未读筛选与已读、改密、主题切换、会话安全 |
@@ -234,6 +235,17 @@ python main.py
 
 没有大模型 Key 时，可以在 langchain_service/.env 里把 LLM_PROVIDER 改为 mock，AI 接口会返回结构完整的示例数据，便于前后端联调。
 
+**语音转写 / 在场检测（可选，答辩需要）**：默认 `ASR_PROVIDER=mock`、`FACE_PROVIDER=mock`，不装模型也能联调整条答辩链路。要切换成真实能力：
+
+```bash
+cd langchain_service
+pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headless
+# 下载中文流式/离线模型到 ./models/ 并把 ASR_MODEL_DIR 指过去（含 tokens.txt 与 *.onnx）
+# .env: ASR_PROVIDER=sherpa_onnx  FACE_PROVIDER=opencv
+```
+
+模型与接口细节见 [docs/defense-asr-face.md](docs/defense-asr-face.md)。
+
 ### 6. 演示账号
 
 密码统一为 `123456`（由 `V2__seed_demo_data.sql` 写入，**仅用于本地演示**）。
@@ -257,6 +269,8 @@ python main.py
 | Redis 口令 | `123456` | `.env` `REDIS_PASSWORD` ↔ `application.yaml` |
 | 内部令牌 | `change-me` | `application.yaml` `sss.ai.internal-token` ↔ `langchain_service/.env` |
 | JWT 密钥 | `change-me-...` | `application.yaml`（≥ 32 字节） |
+| ASR 提供方 | `mock` | `langchain_service/.env` `ASR_PROVIDER`（`mock` / `sherpa_onnx`） |
+| 人脸在场提供方 | `mock` | `langchain_service/.env` `FACE_PROVIDER`（`mock` / `opencv`） |
 
 完整环境变量清单见 `.env.example`。Spring Boot 不读取 `.env` 文件，它读取同名环境变量；不设置时使用 `application.yaml` 里的默认值。
 
@@ -274,6 +288,7 @@ python main.py
 | StudentSelectionController | 5 | `/api/v1/student/*` |
 | SubmissionController | 9 | `/api/v1/student/selections/{id}/...`、`/api/v1/files/*` |
 | GradeController | 9 | `/api/v1/teacher/grades/*`、`/api/v1/student/grades/*` |
+| DefenseController | 10 | `/api/v1/teacher/defense/*`、`/api/v1/defense/sessions/*`、`/api/v1/student/defense/*` |
 | MiscController | 5 | `/api/v1/notifications/*`、`/api/v1/tasks/*` |
 | HealthController | 1 | `/api/v1/health` |
 
@@ -350,7 +365,8 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 
 ## 已知限制
 
-- AI 服务的 5 个 `/internal/ai/**` 接口已实现（默认 mock 模式可联调）；语音答辩（WebSocket + ASR）、静态分析调度、对象存储（MinIO）尚未实现。
+- 答辩主链路已实现（AI 出题、逐题录音 + ASR 转写、教师 AI 评分、摄像头「在场检测」）；**WebSocket 实时流式转写**的 Java 代理与**人脸身份识别/活体**属于下一阶段，当前是用 WAV 整段上传 + OpenCV 正脸检测（只判画面里有没有人）。
+- 默认 `ASR_PROVIDER=mock` / `FACE_PROVIDER=mock`，真实能力需要安装 `requirements-optional.txt` 并下载模型；sherpa-onnx/opencv 真实链路需在目标机复核。
 - 报告正文已用 PDFBox（PDF）/ Apache POI（DOCX）抽取；扫描版 PDF 若没有文本层，仍会退回“无正文”，需要 OCR 才能评分。
 - AI 评审已做提示注入防护（不可信材料包装 + 操纵话术检测）与 0~100 分数区间校验，但检测是启发式的，不能保证穷尽新措辞；最终分数仍由教师复核发布。
 - 前端令牌存放在 sessionStorage（按标签页隔离、关闭即清除），同源 XSS 仍可读取；根治需要后端 HttpOnly Cookie。
@@ -362,9 +378,10 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M1–M4 | 认证、教学组织、选题、提交与成绩主链路 | ✅ |
-| M5 | 语音答辩（WebSocket + ASR + AI 出题评分） | 🚧 |
+| M5 | 语音答辩：AI 出题 + 录音转写 + AI 评分 + 在场检测 | ✅ |
+| M5.1 | 实时流式语音（浏览器 PCM 流 → Java WS 代理 → AI 流式识别）、人脸身份识别/活体 | 📋 |
 | M6 | 静态分析调度与问题明细落库 | 🚧 |
-| M7 | 报告正文抽取、对象存储、后端测试接入 CI | 📋 |
+| M7 | 对象存储（MinIO）、集成测试（Testcontainers） | 📋 |
 
 详细变更与计划见 [CHANGELOG.md](CHANGELOG.md)。
 

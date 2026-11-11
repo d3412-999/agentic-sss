@@ -8,9 +8,11 @@ from functools import lru_cache
 from app.core.config import get_settings
 from app.rag.lightrag_client import LightRagClient
 from app.rag.rag_service import RagService
+from app.services.asr_service import AsrService
 from app.services.code_service import CodeReviewService
 from app.services.consistency_service import ConsistencyService
 from app.services.defense_service import DefenseService
+from app.services.face_presence_service import FacePresenceService
 from app.services.llm_service import LlmService
 from app.services.report_service import ReportService
 from app.services.template_service import TemplateService
@@ -58,3 +60,15 @@ def get_code_service() -> CodeReviewService:
 def get_consistency_service() -> ConsistencyService:
     """获取一致性检查服务单例。"""
     return ConsistencyService(get_settings(), get_rag_service())
+
+
+@lru_cache
+def get_asr_service() -> AsrService:
+    """获取语音转写服务单例（sherpa_onnx 在首次识别时懒加载）。"""
+    return AsrService(get_settings())
+
+
+@lru_cache
+def get_face_presence_service() -> FacePresenceService:
+    """获取人脸在场检测服务单例（opencv 在首次检测时懒加载）。"""
+    return FacePresenceService(get_settings())

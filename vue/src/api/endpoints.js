@@ -119,6 +119,28 @@ export const api = {
     request(`/teacher/offerings/${offeringId}/grades/export`, { method: 'POST', body: payload }),
   studentGrades: (offeringId) => request(`/student/grades${toQuery({ offeringId })}`),
 
+  /* ---------------- 答辩（语音转写 + 摄像头在场检测） ---------------- */
+  teacherDefenseSessions: (offeringId) =>
+    request(`/teacher/defense/sessions${toQuery({ offeringId })}`),
+  teacherDefenseCandidates: (offeringId) =>
+    request(`/teacher/offerings/${offeringId}/defense/candidates`),
+  createDefenseSession: (payload) =>
+    request('/teacher/defense/sessions', { method: 'POST', body: payload }),
+  defenseSession: (sessionId) => request(`/defense/sessions/${sessionId}`),
+  startDefense: (sessionId) => request(`/defense/sessions/${sessionId}/start`, { method: 'POST' }),
+  // durationMs 放查询串：upload() 只支持一个文件字段，@RequestParam 同时读取 query 与 multipart 表单。
+  uploadDefenseAnswer: (sessionId, questionId, file, durationMs, { onProgress } = {}) =>
+    upload(`/defense/sessions/${sessionId}/questions/${questionId}/answer`, {
+      file,
+      query: { durationMs },
+      onProgress,
+    }),
+  faceCheck: (sessionId, imageBase64) =>
+    request(`/defense/sessions/${sessionId}/face-check`, { method: 'POST', body: { imageBase64 } }),
+  finishDefense: (sessionId) => request(`/defense/sessions/${sessionId}/finish`, { method: 'POST' }),
+  evaluateDefense: (sessionId) => request(`/defense/sessions/${sessionId}/evaluate`, { method: 'POST' }),
+  studentDefense: (selectionId) => request(`/student/defense/selections/${selectionId}`),
+
   /* ---------------- 通知 / 异步任务 ---------------- */
   notifications: (params) => request(`/notifications${toQuery(params)}`),
   markNotificationRead: (id) => request(`/notifications/${id}/read`, { method: 'PATCH' }),

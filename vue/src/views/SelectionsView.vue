@@ -22,6 +22,7 @@ const submissions = ref([])
 const detailLoading = ref(false)
 const uploadState = reactive({ SOURCE: { progress: 0, busy: false }, REPORT: { progress: 0, busy: false } })
 const selectedRow = ref(null)
+const defense = ref(null) // 该选题已有的答辩会话（无则 null）
 
 const MAX = { SOURCE: 100 * 1024 ** 2, REPORT: 50 * 1024 ** 2 }
 const ACCEPT = { SOURCE: '.zip,.jar', REPORT: '.pdf,.docx,.doc' }
@@ -74,13 +75,17 @@ async function openDetail(row) {
   open.value = true
   detailLoading.value = true
   submissions.value = []
+  defense.value = null
   try {
-    const [d, subs] = await Promise.all([
+    // 答辩会话可能还没创建（404），静默降级为「无答辩入口」。
+    const [d, subs, def] = await Promise.all([
       api.selectionDetail(row.id),
       api.submissions(row.id),
+      api.studentDefense(row.id).catch(() => null),
     ])
     detail.value = d
     submissions.value = subs?.list || []
+    defense.value = def
   } catch (err) {
     toastError(err, '读取选题详情失败')
   } finally {
@@ -91,9 +96,14 @@ async function openDetail(row) {
 async function refreshDetail() {
   if (!detail.value) return
   try {
-    const [d, subs] = await Promise.all([api.selectionDetail(detail.value.id), api.submissions(detail.value.id)])
+    const [d, subs, def] = await Promise.all([
+      api.selectionDetail(detail.value.id),
+      api.submissions(detail.value.id),
+      api.studentDefense(detail.value.id).catch(() => null),
+    ])
     detail.value = d
     submissions.value = subs?.list || []
+    defense.value = def
     await load()
   } catch {
     // 忽略刷新错误
@@ -268,6 +278,8 @@ onMounted(load)
           <StatusPill :status="detail.status" />
           <span class="pill pill--info"><Icon name="clock" :size="12" />截止 {{ fmtDate(detail.submitDeadline) }}</span>
           <span v-if="detail.finalScore != null" class="pill pill--ok">综合 {{ detail.finalScore }}</span>
+          <span v-if="defense" class="pill pill--brand"><Icon name="shield" :size="12" />答辩会话</span>
+          <StatusPill v-if="defense" :status="defense.status" />
         </div>
 
         <div class="steps" style="flex-wrap: wrap; gap: 6px">
@@ -364,9 +376,12 @@ onMounted(load)
         <button v-if="detail && ['SELECTED', 'SUBMITTED'].includes(detail.status)" class="btn btn--danger" @click="cancelSelection">
           退选
         </button>
+        <RouterLink v-if="defense" :to="`/defense/${defense.id}`" class="btn btn--primary">
+          <Icon name="shield" :size="14" />进入答辩
+        </RouterLink>
         <span class="spacer" />
         <button class="btn btn--ghost" @click="open = false">关闭</button>
-        <button class="btn btn--primary" @click="refreshDetail()"><Icon name="refresh" :size="14" />刷新状态</button>
+        <button class="btn btn--ghost" @click="refreshDetail()"><Icon name="refresh" :size="14" />刷新状态</button>
       </template>
     </Drawer>
   </div>

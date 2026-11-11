@@ -87,3 +87,24 @@ AI 与前端走真实运行；Gradle / Vite 完整构建留待 CI（CI 已改为
   或按文件拷贝；
 - 应用后建议依次执行：`cd backend && ./gradlew build`（含测试）→
   `cd vue && npm ci && npm run build` → `cd langchain_service && python -m pytest -q`。
+---
+
+## 七、答辩子系统（2026-11-11 新增，非修复项）
+
+实施方向：按调研结论「轻量优先、CPU 可跑、复用 FastAPI AI 服务」落地，人脸只做**在场检测**（画面里是否有人），不做身份识别。
+
+| 层 | 新增内容 |
+|---|---|
+| Java 后端 | `DefenseController`（10 接口）+ `DefenseService`（906 行）+ `DefenseDtos` + `V5__defense_voice_and_face.sql`；`AiServiceClient` 新增 `transcribeAudio`（multipart）/`facePresence`；`DefenseSession`/`DefenseAnswer` 加在场检测与 ASR 模型字段 |
+| AI 服务 | `POST /internal/ai/asr/transcribe`（WAV 整段转写）、`WS /internal/ai/asr/stream`（PCM16 流式，供下一阶段）、`POST /internal/ai/face/presence`（OpenCV Haar 只判有人）；provider 双模式 `mock`/`sherpa_onnx`、`mock`/`opencv`；`requirements-optional.txt` |
+| 前端 | 新增 `DefenseView.vue`（摄像头预览 + 3s 在场检测、录音→16k WAV→上传→转写展示、计时/时限、教师评分）、开课工作台「答辩」页签（`DefenseTab.vue`）、学生「进入答辩」入口、路由 `/defense/:sessionId` |
+| 文档 | `docs/defense-asr-face.md`（流程/接口/模型配置/隐私边界）；README、CHANGELOG、langchain_service/README 同步 |
+
+验证证据（本机可复跑）：
+- **后端语义编译**（离线 .m2 jar + 少量 stub 的编译替身，非只 parse）：111 个源文件 `--release 17` **exit 0 / 0 error**（含 Lombok 注解处理、全部答辩类）；parse-only 118 文件 exit 0；
+- 跨文件一致性自动核对（Lead 脚本）：207 项 **0 问题**（DTO record 参数、Controller→Service、实体 getter、AI 客户端方法、import）；
+- AI 服务：`pytest -q` **43 passed / 1 skipped**（新增 ASR 9 + 在场检测 6；skip 为未装 opencv 的降级用例）；
+- 前端：`@vue/compiler-sfc` 编译 32 个 SFC + 10 个 JS + 220 条 import 可达性 **0 problems**；
+- 独立语义审查（另一 teammate）：确认 7 个答辩文件无编译级错误，并按审查建议修复 3 处：结束答辩不再把 GRADED 回退为 DEFENDED、ASR 前 IO 失败会把作答置 FAILED、在场检测加 base64 长度上限。
+
+已知限制（写入 docs/CHANGELOG/README）：实时流式转写的 Java WS 代理与人脸身份识别/活体为下一阶段；默认 mock provider，sherpa-onnx/opencv 真实链路需在目标机装可选依赖并下载模型后复核；并发重复「发起答辩」暂无 DB 唯一约束兜底（应用层先查后插）。

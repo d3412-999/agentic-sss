@@ -5,6 +5,25 @@
 
 ## [Unreleased]
 
+### 新增（答辩子系统：语音转写 + 摄像头在场检测）
+
+- **答辩主链路补齐**：新增 `DefenseController` / `DefenseService`（10 个接口）与
+  `V5__defense_voice_and_face.sql`，覆盖「教师发起 → AI 出题 → 逐题录音 → ASR 转写 →
+  结束 → AI 评分 → 成绩」；状态机 `READY → IN_PROGRESS → COMPLETED → EVALUATED`，
+  选题状态同步 `DEFENDING → DEFENDED`；
+- **语音转写（ASR）**：AI 服务新增 `POST /internal/ai/asr/transcribe`（WAV 整段转写）与
+  `WS /internal/ai/asr/stream`（PCM16 16k 流式，供下一阶段实时接入）；
+  provider 可切 `mock` / `sherpa-onnx`（`requirements-optional.txt` 可选依赖 + 本地中文模型，
+  默认 mock 可离线联调整条链路）；
+- **摄像头在场检测**：AI 服务新增 `POST /internal/ai/face/presence`，只判「画面里有没有人」，
+  provider 可切 `mock` / `opencv`（内置 Haar 正脸检测）；**不落库原图、不写磁盘**，
+  仅记录 `face_present / face_checked_at / face_miss_count`；
+- **前端答辩页**：新增 `/defense/:sessionId` 页面（摄像头预览 + 每 3s 在场检测、ScriptProcessor
+  采集 → 16k mono WAV → 带进度上传、转写展示、时限倒计时、教师评分结果），开课工作台新增
+  「答辩」页签（候选学生/发起/进入），学生「我的选题」加“进入答辩”入口；
+- **API 文档**：新增 [docs/defense-asr-face.md](docs/defense-asr-face.md)（流程、接口、模型配置、隐私边界）；
+- **测试**：AI 服务新增 15 个用例（ASR + 在场检测），当前 43 passed / 1 skipped（opencv 未装时跳过）。
+
 ### 修复（安全与健壮性）
 
 - **上传 DoS**：`.jar` 不再绕过压缩包校验；上传解析与 AI 预扫描统一走 `common/ArchiveGuard`
@@ -38,7 +57,8 @@
 
 ### 计划中
 
-- 语音答辩：WebSocket 语音流 + ASR 转写 + AI 出题与评分；
+- 答辩实时流式：浏览器 PCM 流 → Java WebSocket 代理 → AI `/internal/ai/asr/stream`（边说边出字）；
+- 人脸身份识别 / 活体检测（当前只做「画面里有没有人」的在场检测）；
 - 静态分析：Checkstyle / PMD / SpotBugs 调度与问题明细落库；
 - 对象存储（MinIO）替换本地磁盘 `data/objects`；
 - 集成测试（Testcontainers：真实 MySQL/Redis 下的并发选题、乐观锁、幂等回归）；
