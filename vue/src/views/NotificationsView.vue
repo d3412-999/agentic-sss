@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pager from '../components/Pager.vue'
 import { api } from '../api/endpoints'
@@ -24,7 +25,10 @@ const TYPE_META = {
 }
 
 function meta(type) {
-  return TYPE_META[type] || { icon: 'bell', tone: '' }
+  // 后端通知类型是「前缀_事件」形式（DEFENSE_VIOLATION / GRADE_PUBLISHED …），
+  // 这里按前缀兜底，未知事件也能落到对应类别的图标上，而不是一律变成铃铛。
+  const key = String(type || '').split('_')[0]
+  return TYPE_META[type] || TYPE_META[key] || { icon: 'bell', tone: '' }
 }
 
 function timeText(value) {
@@ -80,20 +84,19 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>站内通知</h1>
-        <p>开课发布、选题结果、评审完成、成绩发布都会在这里提醒。未读 {{ data.unreadCount || 0 }} 条。</p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="站内通知"
+      :description="`开课发布、选题结果、评审完成、成绩发布都会在这里提醒。未读 ${data.unreadCount || 0} 条。`"
+    >
+      <template #actions>
         <button class="btn btn--ghost btn--sm" :disabled="busy || !data.unreadCount" @click="readAll">
           <Icon name="check" :size="14" />全部已读
         </button>
         <button class="btn btn--soft btn--sm" @click="unreadOnly = !unreadOnly; page = 1; load()">
           <Icon name="filter" :size="14" />{{ unreadOnly ? '只看未读' : '全部通知' }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="card">
       <div v-if="loading" class="card__body"><div class="skeleton" style="height: 220px" /></div>

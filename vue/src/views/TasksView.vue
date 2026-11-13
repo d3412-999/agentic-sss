@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted } from 'vue'
 import Icon from '../components/Icon.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
 import StatusPill from '../components/StatusPill.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { activeTasks, cancelTask, clearFinished, refresh, resumeTracking, tasks } from '../stores/tasks'
@@ -44,21 +45,17 @@ onMounted(resumeTracking)
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>任务中心</h1>
-        <p>
-          重算成绩、导出 CSV、解析材料、AI 重新评审都是异步任务。本页记录你在本机发起的任务并自动轮询状态
-          （后端未提供任务列表接口，记录保存在浏览器本地）。
-        </p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="任务中心"
+      description="重算成绩、导出 CSV、解析材料、AI 重新评审都是异步任务。本页记录你在本机发起的任务并自动轮询状态（记录保存在浏览器本地）。"
+    >
+      <template #actions>
         <span class="pill" :class="activeTasks.length ? 'pill--info' : 'pill--ok'">
           {{ activeTasks.length ? `${activeTasks.length} 个进行中` : '当前无进行中任务' }}
         </span>
         <button class="btn btn--ghost btn--sm" @click="clearFinished">清理已完成</button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <EmptyState
       v-if="!items.length"

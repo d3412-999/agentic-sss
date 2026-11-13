@@ -49,6 +49,7 @@ const LABELS = {
   COMPLETED: '已完成',
   EVALUATED: '已评分',
   EXPIRED: '已过期',
+  VIOLATED: '违规终止',
 }
 
 const TONES = {
@@ -56,7 +57,7 @@ const TONES = {
   brand: ['SELECTED', 'READY', 'AUTO'],
   info: ['SUBMITTED', 'DEFENDING', 'IN_PROGRESS', 'PARSING', 'ANALYZING', 'RUNNING', 'GENERATING'],
   warn: ['DRAFT', 'UPLOADED', 'ADJUSTED', 'PENDING', 'CLOSED', 'CREATED'],
-  danger: ['INVALID', 'FAILED', 'CANCELED', 'DISABLED', 'INACTIVE', 'EXPIRED', 'DELETED'],
+  danger: ['INVALID', 'FAILED', 'CANCELED', 'DISABLED', 'INACTIVE', 'EXPIRED', 'DELETED', 'VIOLATED'],
   muted: ['ARCHIVED'],
 }
 

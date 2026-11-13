@@ -18,7 +18,6 @@ function blank() {
   return {
     className: o.className || '',
     description: o.description || '',
-    topicSelectLimit: o.topicSelectLimit ?? 3,
     defense: o.weights?.defense ?? 40,
     code: o.weights?.code ?? 35,
     report: o.weights?.report ?? 25,
@@ -56,7 +55,6 @@ async function save() {
     }
     if (!locked.value) {
       payload.className = form.value.className || undefined
-      payload.topicSelectLimit = Number(form.value.topicSelectLimit)
       payload.weights = {
         defense: Number(form.value.defense),
         code: Number(form.value.code),
@@ -67,7 +65,7 @@ async function save() {
     toast.ok('已保存', '开课配置更新成功')
     emit('saved')
   } catch (err) {
-    error.value = err.message
+    error.value = err?.traceId ? `${err.message}（traceId: ${err.traceId}）` : err.message
   } finally {
     busy.value = false
   }
@@ -88,10 +86,6 @@ async function save() {
           <div class="field">
             <label>教学班</label>
             <input v-model="form.className" class="input" :disabled="locked" />
-          </div>
-          <div class="field">
-            <label>每人最多选几题</label>
-            <input v-model.number="form.topicSelectLimit" type="number" min="1" max="10" class="input" :disabled="locked" />
           </div>
           <div class="field span-2">
             <label>课程说明</label>
@@ -163,8 +157,7 @@ async function save() {
       <section class="card card--pad">
         <div class="section-title"><Icon name="flag" :size="14" />答辩设置</div>
         <dl class="dl" style="grid-template-columns: 76px 1fr">
-          <dt>模式</dt><dd>{{ offering.defenseConfig?.defenseMode || 'AI_ASYNC' }}</dd>
-          <dt>题目数</dt><dd>{{ offering.defenseConfig?.questionCount ?? 5 }}</dd>
+          <dt>题目数</dt><dd>{{ offering.defenseConfig?.questionCount ?? '不限' }}</dd>
           <dt>单题时长</dt><dd>{{ offering.defenseConfig?.maxAnswerSeconds ?? 180 }} 秒</dd>
           <dt>允许重答</dt><dd>{{ offering.defenseConfig?.allowRetry ? '是' : '否' }}</dd>
         </dl>
@@ -195,7 +188,7 @@ async function save() {
       <section class="card card--pad">
         <div class="section-title"><Icon name="lock" :size="14" />状态机</div>
         <p class="small muted">
-          草稿 → 已发布 → 已关闭 → 已归档。发布后权重、限选数与班级锁定，时间线只能向后延；
+          草稿 → 已发布 → 已关闭 → 已归档。发布后权重与班级锁定，时间线只能向后延；
           关闭后学生不能再选题，归档为最终态。
         </p>
       </section>

@@ -7,7 +7,7 @@ import vue from '@vitejs/plugin-vue'
 // 必须显式调用 loadEnv，否则 .env.example 里写的值根本不会生效。
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const apiTarget = env.VITE_API_TARGET || process.env.VITE_API_TARGET || 'http://127.0.0.1:8081'
+  const apiTarget = env.VITE_API_TARGET || process.env.VITE_API_TARGET || 'http://127.0.0.1:8084'
   const frontendPort = Number(env.FRONTEND_PORT || process.env.FRONTEND_PORT || 5173)
 
   return {
@@ -15,7 +15,10 @@ export default defineConfig(({ mode }) => {
     server: {
       host: '127.0.0.1',
       port: frontendPort,
-      strictPort: false,
+      // 必须 true：端口被占用时直接失败，而不是悄悄 +1 跳到下一个端口。
+      // 自动换端口会造成「浏览器还开着旧地址 / 代理指向旧端口」的静默错位，
+      // 比直接报错难排查得多。清理占用请用 scripts/dev-up.ps1。
+      strictPort: true,
       watch: {
         // 有的编辑器保存时先生成临时目录/文件（如 .DefenseView.vue.xxx.tmpdir），
         // Windows 下被文件锁住时会让 Vite 的文件监听抛 EBUSY 直接退出 dev server，这里忽略掉。

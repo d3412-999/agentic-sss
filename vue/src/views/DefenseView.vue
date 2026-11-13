@@ -1,16 +1,23 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import StatusPill from '../components/StatusPill.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ProgressRing from '../components/ProgressRing.vue'
+import Modal from '../components/Modal.vue'
+import SourceCodePanel from '../components/defense/SourceCodePanel.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
+import StepFlow from '../components/layout/StepFlow.vue'
+import { STUDENT_FLOW } from '../config/flow'
 import { api, DIFFICULTY_LABEL } from '../api/endpoints'
 import { currentRole } from '../stores/session'
 import { confirm } from '../stores/confirm'
 import { toast, toastError } from '../stores/toast'
+import { useDefenseGuard } from '../composables/useDefenseGuard'
 
 const route = useRoute()
+const router = useRouter()
 const sessionId = computed(() => String(route.params.sessionId || ''))
 const isTeacher = computed(() => currentRole.value === 'TEACHER')
 const isStudent = computed(() => currentRole.value === 'STUDENT')
@@ -38,6 +45,72 @@ const answeredCount = computed(() => {
   if (session.value?.answeredCount != null) return session.value.answeredCount
   return questions.value.filter((q) => q.answerStatus === 'TRANSCRIBED').length
 })
+
+/* ---------------- 三原则 / 加分题（判定结论只给教师看） ---------------- */
+const DIMENSION_LABEL = {
+  P1_RETELL: '复述设计',
+  P2_REASON: '解释修改理由',
+  P3_MODIFY: '现场改动',
+  IS_BONUS: '拓展',
+}
+const scoredQuestions = computed(() => questions.value.filter((q) => !q.bonus))
+const bonusQuestions = computed(() => questions.value.filter((q) => q.bonus))
+const principleRows = computed(() => {
+  const raw = session.value?.principleResult
+  return Array.isArray(raw) ? raw : []
+})
+const aiDependentView = computed(() => {
+  const value = session.value?.aiDependent
+  if (value === true) return { text: '完全依赖 AI', tone: 'pill--danger', hint: '两项及以上原则未通过' }
+  if (value === false) return { text: '未判定为完全依赖', tone: 'pill--ok', hint: '至少两项原则通过' }
+  return { text: '未判定', tone: '', hint: '历史会话或尚未评分' }
+})
+const BONUS_RESULT_LABEL = { CORRECT: '答对', WRONG: '答错', UNANSWERED: '未作答' }
+
+/* 教师覆盖判定：理由必填，仅留痕 */
+const overrideOpen = ref(false)
+const overrideForm = ref({ aiDependent: false, reason: '' })
+const overriding = ref(false)
+
+function openOverride() {
+  overrideForm.value = {
+    aiDependent: session.value?.aiDependent === true,
+    reason: '',
+  }
+  overrideOpen.value = true
+}
+
+async function submitOverride() {
+  const reason = overrideForm.value.reason.trim()
+  if (reason.length < 5) {
+    toast.info('请填写理由', '覆盖判定必须说明原因（至少 5 个字）')
+    return
+  }
+  overriding.value = true
+  try {
+    await api.overrideDefenseAiDependent(sessionId.value, {
+      aiDependent: overrideForm.value.aiDependent,
+      reason,
+    })
+    toast.ok('已保存覆盖结果', '原始判定仍保留在记录里，可随时回看')
+    overrideOpen.value = false
+    await load()
+  } catch (err) {
+    toastError(err, '保存失败')
+  } finally {
+    overriding.value = false
+  }
+}
+
+async function skipBonus(question) {
+  try {
+    await api.skipDefenseBonus(sessionId.value, question.id)
+    toast.info('已跳过加分题', '加分题不计入总分，可在结束后查看结果')
+    await load()
+  } catch (err) {
+    toastError(err, '跳过失败')
+  }
+}
 const canStart = computed(() => session.value?.status === 'READY')
 const canFinish = computed(() => session.value?.status === 'IN_PROGRESS')
 const canAnswer = computed(() => session.value?.status === 'IN_PROGRESS')
@@ -65,8 +138,79 @@ const statusHint = computed(() => {
   if (status === 'EXPIRED') {
     return { tone: 'alert--warn', text: '本次答辩已过期，请联系教师重新发起。' }
   }
+  if (status === 'VIOLATED') {
+    return {
+      tone: 'alert--danger',
+      text: isTeacher.value
+        ? '系统检测到多次违规已暂停本次答辩：可在「课程详情 → 答辩」里确认是终止评分还是恢复答辩。'
+        : '系统检测到多次离开答题页/打开开发者工具等行为，答辩已暂停；请等待监考教师确认是否恢复。',
+    }
+  }
   return null
 })
+
+/* ---------------- 只读源码面板（仅本人 + 进行中） ---------------- */
+const canViewSource = computed(() => isStudent.value && session.value?.status === 'IN_PROGRESS')
+/** 宽屏（≥1280）默认与题目同屏分栏；窄屏退化为 Tab 切换，避免把代码区压到 400px 以下。 */
+const isWide = ref(typeof window === 'undefined' ? true : window.innerWidth >= 1280)
+const sourcePane = ref('answer') // answer | source（仅窄屏使用）
+const sourceCollapsed = ref(false)
+const sourceVisible = computed(
+  () => canViewSource.value && !sourceCollapsed.value && (isWide.value || sourcePane.value === 'source'),
+)
+const answerVisible = computed(() => !(canViewSource.value && !isWide.value && sourcePane.value === 'source'))
+
+function onResize() {
+  isWide.value = window.innerWidth >= 1280
+}
+
+function openSource() {
+  sourceCollapsed.value = false
+  sourcePane.value = 'source'
+  void nextTick(() => {
+    const panel = document.getElementById('defense-source')
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
+function collapseSource() {
+  sourceCollapsed.value = true
+  sourcePane.value = 'answer'
+}
+
+/* ---------------- 防作弊辅助检测（证据上报，不自行裁决） ---------------- */
+const guardWarning = ref(null)
+const guardTerminated = ref(false)
+let leaveTimer = null
+
+const {
+  violations: guardCount,
+  start: startGuard,
+  stop: stopGuard,
+  suppress: suppressGuard,
+  notifyBlocked,
+} = useDefenseGuard({
+  sessionId,
+  active: computed(() => isStudent.value && session.value?.status === 'IN_PROGRESS'),
+  onWarn: (result) => {
+    guardWarning.value = result
+  },
+  onTerminated: (result) => {
+    guardWarning.value = null
+    guardTerminated.value = true
+    stopGuard()
+    // 先把本机录像/摄像头收掉，再跳离：避免后台继续占着摄像头
+    stopCamera()
+    if (videoRecorderState.value === 'recording') void finalizeVideoRecording()
+    leaveTimer = setTimeout(() => {
+      router.replace('/selections')
+    }, 4000)
+  },
+})
+
+function dismissGuardWarning() {
+  guardWarning.value = null
+}
 
 /* ---------------- 摄像头在场检测 ---------------- */
 const CAPTURE_INTERVAL_MS = 3000
@@ -321,6 +465,8 @@ function sampleVideoQuality() {
 async function startCamera(withAudio = false) {
   if (cameraState.value === 'live' || cameraState.value === 'starting') return
   if (!canDetect.value) return
+  // 摄像头/麦克风授权弹窗会让窗口失焦：授权期间的 blur 不计违规
+  suppressGuard(6000)
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     cameraState.value = 'unsupported'
     presence.value = 'unavailable'
@@ -945,6 +1091,8 @@ function tickRecording() {
 
 async function startRecording(question) {
   if (!canAnswer.value || recording.value || uploadQuestionId.value) return
+  // 麦克风授权弹窗同样会让窗口失焦：这段时间的 blur 不算违规
+  suppressGuard(6000)
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     toast.error('无法录音', '当前浏览器不支持麦克风采集')
     return
@@ -1222,7 +1370,8 @@ watch(
   () => session.value?.status,
   async (status) => {
     if (!status) return
-    if (['COMPLETED', 'EVALUATED', 'EXPIRED'].includes(status)) {
+    if (['COMPLETED', 'EVALUATED', 'EXPIRED', 'VIOLATED'].includes(status)) {
+      stopGuard()
       if (recordingQuestionId.value) {
         recordingQuestionId.value = ''
         recordElapsedMs.value = 0
@@ -1244,6 +1393,7 @@ watch(
     if (!isStudent.value) return
     if (status === 'IN_PROGRESS') {
       await nextTick()
+      startGuard()
       void ensureRecordingStream()
       return
     }
@@ -1257,6 +1407,15 @@ watch(
 // 同一路由切换 sessionId 时复用组件：重置检测/录像状态并重新加载。
 watch(sessionId, async () => {
   revokeVideoUrl()
+  stopGuard()
+  guardWarning.value = null
+  guardTerminated.value = false
+  sourcePane.value = 'answer'
+  sourceCollapsed.value = false
+  if (leaveTimer) {
+    clearTimeout(leaveTimer)
+    leaveTimer = null
+  }
   if (videoRecorderState.value === 'recording') void finalizeVideoRecording()
   else cleanupVideoRecorder()
   stopCamera()
@@ -1285,6 +1444,7 @@ function focusVideoCard() {
 
 onMounted(async () => {
   window.addEventListener('beforeunload', onBeforeUnload)
+  window.addEventListener('resize', onResize)
   try {
     selectedCameraId.value =
       (typeof localStorage !== 'undefined' && localStorage.getItem(CAMERA_DEVICE_STORAGE_KEY)) || ''
@@ -1295,12 +1455,20 @@ onMounted(async () => {
   await nextTick()
   focusVideoCard()
   if (!isStudent.value) return
-  if (session.value?.status === 'IN_PROGRESS') void ensureRecordingStream()
-  else if (canDetect.value) void startCamera()
+  if (session.value?.status === 'IN_PROGRESS') {
+    startGuard()
+    void ensureRecordingStream()
+  } else if (canDetect.value) void startCamera()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
+  window.removeEventListener('resize', onResize)
+  if (leaveTimer) {
+    clearTimeout(leaveTimer)
+    leaveTimer = null
+  }
+  stopGuard()
   revokeVideoUrl()
   // 离开页面也不丢录像：能拿到 blob 就静默后台上传（失败时页面已卸载，无法再提示）。
   if (videoRecorderState.value === 'recording') {
@@ -1321,26 +1489,32 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <div class="page-head">
-      <div style="min-width: 0">
-        <div class="row small dim" style="margin-bottom: 6px">
-          <RouterLink :to="isTeacher ? '/offerings' : '/selections'">{{ isTeacher ? '教学班' : '我的选题' }}</RouterLink>
-          <Icon name="chevron-right" :size="12" />
-          <span class="truncate">答辩</span>
-        </div>
-        <h1 class="row row--wrap" style="gap: 10px">
-          <span class="truncate">{{ session?.studentName || '答辩会话' }}</span>
-          <StatusPill v-if="session" :status="session.status" />
-        </h1>
-        <p v-if="session">
+    <PageHeader>
+      <template #breadcrumb>
+        <RouterLink :to="isTeacher ? '/offerings' : '/selections'">{{ isTeacher ? '教学班' : '我的选题' }}</RouterLink>
+        <Icon name="chevron-right" :size="12" />
+        <span class="truncate">答辩</span>
+      </template>
+      <template #title>
+        <span class="truncate">{{ session?.studentName || '答辩会话' }}</span>
+        <StatusPill v-if="session" :status="session.status" />
+        <span v-if="guardCount > 0 && isStudent" class="pill pill--danger">
+          <Icon name="alert" :size="12" />已记录 {{ guardCount }} 次违规
+        </span>
+      </template>
+      <template #meta>
+        <span v-if="session" class="small muted">
           <span v-if="session.studentNo" class="mono">{{ session.studentNo }}</span>
           <span v-if="session.className"> · {{ session.className }}</span>
           · 作答 {{ answeredCount }} / {{ session.questionCount ?? questions.length }}
           <span v-if="session.durationMs"> · 答辩用时 {{ fmtDuration(session.durationMs) }}</span>
-        </p>
-        <p v-else>语音作答自动转写，教师统一评分。</p>
-      </div>
-      <div v-if="session" class="page-head__actions">
+        </span>
+        <span v-else class="small muted">语音作答自动转写，教师统一评分。</span>
+      </template>
+      <template v-if="!isTeacher" #steps>
+        <StepFlow :steps="STUDENT_FLOW" current="defense" dense />
+      </template>
+      <template v-if="session" #actions>
         <button class="btn btn--ghost" :disabled="loading || Boolean(busy)" @click="load(true)">
           <Icon name="refresh" :size="15" />刷新
         </button>
@@ -1362,8 +1536,8 @@ onBeforeUnmount(() => {
             session.status === 'EVALUATED' ? '重新评分' : 'AI 评分'
           }}
         </button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="loading" class="grid grid--sidebar">
       <div class="skeleton" style="height: 320px" />
@@ -1392,18 +1566,94 @@ onBeforeUnmount(() => {
               <span class="small dim">评分时间 {{ fmtTime(session.evaluatedAt) }}</span>
             </div>
             <p class="small" style="margin-top: 8px; white-space: pre-wrap">{{ session.summary || 'AI 未返回评语。' }}</p>
+
+            <!-- 三原则判定：只给教师看；学生端不展示维度与结论 -->
+            <div v-if="isTeacher" style="margin-top: 12px">
+              <div class="row row--wrap" style="gap: 8px">
+                <strong class="small">是否完全依赖 AI</strong>
+                <span class="pill" :class="aiDependentView.tone">{{ aiDependentView.text }}</span>
+                <span class="small dim">{{ aiDependentView.hint }}</span>
+                <span v-if="session.aiDependentOverridden" class="pill pill--warn">教师已覆盖</span>
+                <span class="spacer" />
+                <button v-if="session.score != null" class="btn btn--ghost btn--sm" @click="openOverride">
+                  <Icon name="check" :size="13" />覆盖判定
+                </button>
+              </div>
+              <div v-if="session.aiDependentOverridden && session.overrideReason" class="small dim" style="margin-top: 4px">
+                覆盖理由：{{ session.overrideReason }}
+              </div>
+              <div v-if="principleRows.length" class="principle-grid">
+                <div v-for="row in principleRows" :key="row.dimension" class="principle-item">
+                  <div class="row" style="gap: 6px">
+                    <strong class="small">{{ row.label || DIMENSION_LABEL[row.dimension] }}</strong>
+                    <span class="pill" :class="row.passed ? 'pill--ok' : 'pill--danger'">
+                      {{ row.passed ? '通过' : '未通过' }}
+                    </span>
+                    <span class="spacer" />
+                    <span class="num mono small">{{ row.score ?? '—' }}</span>
+                  </div>
+                  <div class="small dim" style="margin-top: 3px">{{ row.evidence }}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 学生端只看结果本身：拓展题答对/答错/未作答 -->
+            <div v-if="isStudent && session.bonusResult" class="alert alert--info" style="margin-top: 10px">
+              <Icon name="target" :size="15" style="flex: none; margin-top: 2px" />
+              <span>
+                拓展题：<strong>{{ BONUS_RESULT_LABEL[session.bonusResult] || session.bonusResult }}</strong>
+                <template v-if="session.bonusComment"> · {{ session.bonusComment }}</template>
+                <span class="small dim">（不计入答辩总分）</span>
+              </span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="grid grid--sidebar">
+      <!-- 窄屏（<1280）：答题与源码用 Tab 切换；宽屏两者同屏分栏 -->
+      <div v-if="canViewSource && !isWide" class="defense-tabs">
+        <button
+          class="defense-tabs__btn"
+          :class="{ 'is-active': sourcePane === 'answer' }"
+          @click="sourcePane = 'answer'"
+        >
+          <Icon name="file" :size="14" />答辩题目
+        </button>
+        <button
+          class="defense-tabs__btn"
+          :class="{ 'is-active': sourcePane === 'source' }"
+          @click="openSource()"
+        >
+          <Icon name="code" :size="14" />我的源码
+        </button>
+      </div>
+
+      <SourceCodePanel
+        v-if="sourceVisible"
+        id="defense-source"
+        :session-id="sessionId"
+        :started-at="session.startedAt || ''"
+        style="margin-bottom: 16px"
+        @blocked="notifyBlocked"
+        @collapse="collapseSource"
+      />
+
+      <div v-if="answerVisible" class="grid grid--sidebar">
         <div>
           <div class="row" style="margin-bottom: 10px">
             <div class="section-title" style="margin: 0"><Icon name="file" :size="14" />答辩题目（{{ questions.length }}）</div>
             <span class="spacer" />
+            <button
+              v-if="canViewSource && !sourceVisible"
+              class="btn btn--ghost btn--sm"
+              @click="openSource()"
+            >
+              <Icon name="code" :size="14" />查看源码
+            </button>
             <span class="small dim">
               {{ isStudent ? '按顺序录音作答，录音自动上传并转写' : '教师视角：可查看评分要点与参考答案' }}
             </span>
+            <span v-if="isStudent && !canViewSource" class="small dim">· 源码仅答辩进行中可查看</span>
           </div>
 
           <EmptyState
@@ -1416,14 +1666,19 @@ onBeforeUnmount(() => {
           <article v-for="q in questions" :key="q.id" class="card" style="margin-bottom: 12px">
             <div class="card__body" style="display: grid; gap: 12px">
               <div class="row row--wrap" style="align-items: flex-start">
-                <span class="tag">第 {{ q.orderNo }} 题</span>
+                <span class="tag">{{ q.bonus ? '拓展题' : `第 ${q.orderNo} 题` }}</span>
                 <span class="tag">{{ TYPE_LABEL[q.type] || q.type || '综合' }}</span>
                 <span class="tag">{{ DIFFICULTY_LABEL[q.difficulty] || q.difficulty || '不限难度' }}</span>
+                <!-- 维度标签与判定只给教师；学生端只看到「拓展题」这个中性措辞 -->
+                <span v-if="q.bonus" class="pill pill--warn">
+                  {{ isTeacher ? '加分题 · 不计入总分' : '不计入总分' }}
+                </span>
+                <span v-else-if="isTeacher && q.dimension" class="tag">{{ DIMENSION_LABEL[q.dimension] || q.dimension }}</span>
                 <span class="pill pill--info">
                   <Icon name="clock" :size="12" />{{ q.maxAnswerSeconds ? `限时 ${q.maxAnswerSeconds}s` : '不限时' }}
                 </span>
                 <span class="spacer" />
-                <span class="pill" :class="answerTone(q.answerStatus)">{{ answerText(q.answerStatus) }}</span>
+                <span class="pill" :class="answerTone(q.answerStatus)">{{ q.skipped ? '已跳过' : answerText(q.answerStatus) }}</span>
               </div>
 
               <div class="q-text">{{ q.question }}</div>
@@ -1486,6 +1741,16 @@ onBeforeUnmount(() => {
                     @click="startRecording(q)"
                   >
                     <Icon name="play" :size="14" />{{ q.transcript ? '重新录音' : '录音作答' }}
+                  </button>
+                  <!-- 加分题：答不出来允许跳过，跳过不影响总分与三原则判定 -->
+                  <button
+                    v-if="canAnswer && q.bonus && !q.skipped"
+                    class="btn btn--ghost btn--sm"
+                    :disabled="recording || Boolean(uploadQuestionId)"
+                    title="加分题不计入总分，可直接跳过"
+                    @click="skipBonus(q)"
+                  >
+                    <Icon name="skip" :size="14" />跳过本题
                   </button>
                   <button
                     v-if="pendingUpload && pendingUpload.questionId === q.id"
@@ -1759,10 +2024,155 @@ onBeforeUnmount(() => {
         <span v-if="frameDark" class="rec-window__hint" style="color: #fbbf24">画面过暗，请检查摄像头</span>
       </div>
     </div>
+
+    <!-- 教师覆盖「是否完全依赖 AI」判定：只留痕，不删原始结论 -->
+    <Modal v-if="overrideOpen" title="覆盖「是否完全依赖 AI」判定" size="sm" @close="overrideOpen = false">
+      <div style="display: grid; gap: 12px">
+        <div class="alert alert--info" style="align-items: flex-start">
+          <Icon name="shield" :size="15" style="flex: none; margin-top: 2px" />
+          <div style="min-width: 0" class="small">
+            当前判定：<strong>{{ aiDependentView.text }}</strong>（{{ aiDependentView.hint }}）。
+            覆盖只改结论标记，不改 AI 给出的总分与逐题分数，原始判定会保留在记录中。
+          </div>
+        </div>
+        <div class="field">
+          <label class="field__label">覆盖为</label>
+          <div class="row" style="gap: 8px">
+            <label class="choice">
+              <input v-model="overrideForm.aiDependent" type="radio" :value="true" />
+              <span>完全依赖 AI</span>
+            </label>
+            <label class="choice">
+              <input v-model="overrideForm.aiDependent" type="radio" :value="false" />
+              <span>未完全依赖 AI</span>
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field__label">覆盖理由（必填，至少 5 个字）</label>
+          <textarea
+            v-model="overrideForm.reason"
+            class="input"
+            rows="3"
+            maxlength="200"
+            placeholder="例如：现场追问时学生能口述表结构设计取舍，判断为不依赖 AI"
+          />
+          <div class="small dim" style="margin-top: 4px">{{ overrideForm.reason.trim().length }} / 200</div>
+        </div>
+      </div>
+      <template #foot>
+        <button class="btn btn--ghost" :disabled="overriding" @click="overrideOpen = false">取消</button>
+        <button class="btn btn--primary" :disabled="overriding" @click="submitOverride">
+          {{ overriding ? '保存中…' : '确认覆盖' }}
+        </button>
+      </template>
+    </Modal>
+
+    <!-- 违规警告：只提示，不阻断作答；累计到阈值由后端终止 -->
+    <Modal v-if="guardWarning" title="违规提醒" @close="dismissGuardWarning">
+      <div style="display: grid; gap: 12px">
+        <div class="alert alert--danger" style="align-items: flex-start">
+          <Icon name="alert" :size="16" style="flex: none; margin-top: 2px" />
+          <div style="min-width: 0">
+            <strong>已记录第 {{ guardWarning.count }} 次违规</strong>
+            <div class="small" style="margin-top: 6px">{{ guardWarning.message }}</div>
+          </div>
+        </div>
+        <p class="small dim" style="margin: 0">
+          离开答题页、打开开发者工具、长时间粘贴外部内容都会被记录，并实时同步给监考教师。
+          累计 {{ guardWarning.threshold || 2 }} 次会暂停答辩，是否继续由教师确认。
+        </p>
+      </div>
+      <template #foot>
+        <button class="btn btn--primary" @click="dismissGuardWarning">我知道了，继续作答</button>
+      </template>
+    </Modal>
+
+    <!-- 已终止：不可关闭，4 秒后自动离开答辩页 -->
+    <div v-if="guardTerminated" class="guard-stop">
+      <div class="guard-stop__card">
+        <Icon name="shield" :size="34" />
+        <h2>答辩已暂停</h2>
+        <p>
+          系统检测到多次违规行为，本次答辩已被强制暂停。是否继续由监考教师确认，
+          恢复后可以继续作答；教师确认违规的，本次答辩将以已作答内容评分。
+        </p>
+        <p class="small dim">正在返回「我的选题」…</p>
+        <RouterLink to="/selections" class="btn btn--primary btn--sm">立即返回</RouterLink>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 窄屏：答题 / 源码 Tab */
+.defense-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+.defense-tabs__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.defense-tabs__btn.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-xs);
+}
+
+/* 违规终止遮罩：不可关闭，避免学生「关掉提示继续答」 */
+.guard-stop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(11, 16, 32, 0.78);
+  backdrop-filter: blur(3px);
+}
+
+.guard-stop__card {
+  width: min(460px, 100%);
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 28px 24px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
+  box-shadow: var(--shadow-lg);
+}
+
+.guard-stop__card h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.guard-stop__card p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .cam-frame {
   position: relative;
   overflow: hidden;
@@ -1907,5 +2317,43 @@ onBeforeUnmount(() => {
   50% {
     opacity: 0.25;
   }
+}
+
+/* 三原则逐维度判定：只给教师看，两列在宽屏铺开 */
+.principle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.principle-item {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+
+.principle-item .small.dim {
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 覆盖判定弹窗里的单选行 */
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.choice input {
+  margin: 0;
+  accent-color: var(--accent);
 }
 </style>

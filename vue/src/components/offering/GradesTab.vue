@@ -10,6 +10,7 @@ import { api } from '../../api/endpoints'
 import { confirm } from '../../stores/confirm'
 import { track } from '../../stores/tasks'
 import { toast, toastError } from '../../stores/toast'
+import TabHead from '../layout/TabHead.vue'
 
 const props = defineProps({
   offeringId: { type: String, required: true },
@@ -229,6 +230,23 @@ onMounted(() => {
 
 <template>
   <div>
+    <TabHead
+      title="成绩"
+      description="先重算再发布。发布后学生可见且成绩锁定，撤销仅有 24 小时窗口。"
+    >
+      <template #actions>
+        <button class="btn btn--ghost btn--sm" :disabled="busy === 'recalc'" @click="recalc">
+          <Icon name="refresh" :size="14" />重算
+        </button>
+        <button class="btn btn--ghost btn--sm" :disabled="busy === 'export'" @click="exportCsv">
+          <Icon name="download" :size="14" />导出 CSV
+        </button>
+        <button class="btn btn--primary btn--sm" :disabled="busy === 'publish'" @click="publish">
+          <Icon name="check" :size="14" />发布成绩
+        </button>
+      </template>
+    </TabHead>
+
     <div class="grid grid--4" style="margin-bottom: 14px">
       <div v-for="s in sumRows" :key="s.label" class="kpi" style="padding: 13px 16px">
         <div class="kpi__label">{{ s.label }}</div>
@@ -248,16 +266,8 @@ onMounted(() => {
       </select>
       <button class="btn btn--ghost btn--sm" @click="page = 1; load()"><Icon name="search" :size="14" />查询</button>
       <div class="spacer" />
-      <button class="btn btn--ghost btn--sm" :disabled="busy === 'recalc'" @click="recalc">
-        <Icon name="refresh" :size="14" />重算
-      </button>
-      <button class="btn btn--ghost btn--sm" :disabled="busy === 'export'" @click="exportCsv">
-        <Icon name="download" :size="14" />导出 CSV
-      </button>
+      <!-- 破坏性操作与主操作分离：撤销单独留在工具栏，不与「发布成绩」并排 -->
       <button class="btn btn--ghost btn--sm" :disabled="busy === 'unpublish'" @click="unpublish">撤销发布</button>
-      <button class="btn btn--primary btn--sm" :disabled="busy === 'publish'" @click="publish">
-        <Icon name="check" :size="14" />发布成绩
-      </button>
     </div>
 
     <div class="card">

@@ -22,7 +22,7 @@ const health = ref(null)
 const ROLES = [
   { key: 'STUDENT', label: '学生', hint: '选题 · 提交 · 查看成绩' },
   { key: 'TEACHER', label: '教师', hint: '开课 · 出题 · 评分发布' },
-  { key: 'ADMIN', label: '管理员', hint: '账号与系统运维' },
+  { key: 'ADMIN', label: '管理员', hint: '教师账号 · 权限管理' },
 ]
 
 const DEMO = [
@@ -78,7 +78,10 @@ async function submit() {
       // me 失败不影响登录流程
     }
     toast.ok('登录成功', `欢迎回来，${data?.user?.name || data?.user?.username || ''}`)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    // 管理员只有「教师账号」一个页面，忽略历史 redirect，避免落到教师端 / 学生端
+    const redirect = data?.user?.role === 'ADMIN'
+      ? '/admin/teachers'
+      : typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     router.push(redirect)
   } catch (err) {
     const fields = err?.data?.errors
@@ -132,7 +135,7 @@ async function submit() {
 
     <section class="auth__panel">
       <div class="auth-box">
-        <h2>登录工作台</h2>
+        <h2>登录</h2>
         <p class="auth-box__sub">{{ activeRole.hint }}</p>
 
         <div class="auth-status" :class="backend === 'up' ? 'auth-status--ok' : backend === 'down' ? 'auth-status--bad' : ''">

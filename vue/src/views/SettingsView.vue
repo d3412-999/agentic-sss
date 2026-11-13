@@ -1,11 +1,15 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
 import { api, ROLE_LABEL } from '../api/endpoints'
 import { session, currentRole, clearSession, setMe } from '../stores/session'
 import { THEMES, setTheme, theme } from '../stores/theme'
+import { confirm } from '../stores/confirm'
 import { toast, toastError } from '../stores/toast'
+import { cleanupNow } from '../persist/resume'
+import { storage, onStorageHealth, storageHealth } from '../utils/storage'
 
 const router = useRouter()
 const me = ref(session.me)
@@ -66,17 +70,107 @@ async function logout() {
   router.push({ name: 'login' })
 }
 
-onMounted(load)
+/* ---------------- 本地缓存 ---------------- */
+
+/**
+ * 「本地缓存」面板：把 localStorage/sessionStorage 里本应用写入的记录摊开给用户看。
+ *
+ * 只列 `sss:{module}:{userId}:{context}` 规范下的 key，
+ * 登录令牌（`sss.accessToken`）、主题偏好（`sss.theme`）这些不属于该命名空间，
+ * 所以「全部清空」不会把用户踢下线，也不会重置外观。
+ */
+const MODULE_LABEL = {
+  upload: '上传进度',
+  draft: '表单草稿',
+  steps: '流程步骤',
+  form: '临时表单',
+  async: '后台任务',
+  settings: '界面偏好',
+}
+
+const cacheRows = ref([])
+const cacheStats = ref({ count: 0, totalBytes: 0, byModule: {}, byArea: {} })
+const cacheBusy = ref(false)
+const cacheHealth = ref(storageHealth())
+let offHealth = null
+
+function humanBytes(bytes) {
+  const n = Number(bytes) || 0
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
+  if (n >= 1024) return Math.round(n / 1024) + ' KB'
+  return n + ' B'
+}
+
+function timeText(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+async function loadCache() {
+  cacheBusy.value = true
+  try {
+    cacheRows.value = await storage.list()
+    cacheStats.value = await storage.stats()
+  } finally {
+    cacheBusy.value = false
+  }
+}
+
+async function removeOne(row) {
+  await storage.removeKey(row.key, { area: row.area })
+  await loadCache()
+}
+
+async function clearExpired() {
+  cacheBusy.value = true
+  try {
+    const result = await cleanupNow()
+    toast.ok('已清理过期数据', result.removed.length ? `移除 ${result.removed.length} 条` : '没有过期数据')
+  } finally {
+    cacheBusy.value = false
+  }
+  await loadCache()
+}
+
+async function clearAllCache() {
+  if (!(await confirm({
+    title: '清空本地缓存？',
+    message: '上传进度、表单草稿、任务记录都会被删除；已提交到服务端的内容不受影响。',
+    danger: true,
+    confirmText: '清空',
+  }))) return
+  cacheBusy.value = true
+  try {
+    const removed = await storage.clearAll()
+    toast.ok('已清空', `共删除 ${removed} 条本地记录`)
+  } finally {
+    cacheBusy.value = false
+  }
+  await loadCache()
+}
+
+onMounted(async () => {
+  await load()
+  await loadCache()
+  offHealth = onStorageHealth((state) => {
+    cacheHealth.value = state
+  })
+})
+
+onBeforeUnmount(() => {
+  if (offHealth) offHealth()
+})
 </script>
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>账号设置</h1>
-        <p>个人信息来自后端 <span class="mono">GET /auth/me</span>；修改密码后所有旧令牌立即失效。</p>
-      </div>
-    </div>
+    <PageHeader title="账号设置">
+      <template #description>
+        个人信息来自后端 <span class="mono">GET /auth/me</span>；修改密码后所有旧令牌立即失效。
+      </template>
+    </PageHeader>
 
     <div class="grid grid--sidebar">
       <div style="display: grid; gap: 16px">
@@ -174,6 +268,54 @@ onMounted(load)
           <button class="btn btn--danger btn--block" style="margin-top: 14px" @click="logout">
             <Icon name="logout" :size="15" />退出登录
           </button>
+        </section>
+
+        <section class="card card--pad">
+          <div class="section-title"><Icon name="inbox" :size="14" />本地缓存</div>
+          <p class="small dim" style="margin: 0 0 10px">
+            上传进度、表单草稿、后台任务游标保存在本机浏览器，共
+            <strong class="num">{{ cacheRows.length }}</strong> 条，约
+            <strong class="num">{{ humanBytes(cacheStats.totalBytes) }}</strong>。
+          </p>
+
+          <div v-if="!cacheHealth.available" class="alert alert--danger small" style="margin-bottom: 10px">
+            <Icon name="alert" :size="14" style="flex: none; margin-top: 2px" />
+            {{ cacheHealth.lastError }}，当前只能存内存，刷新即丢
+          </div>
+
+          <div v-if="cacheRows.length" style="display: grid; gap: 6px; max-height: 210px; overflow: auto">
+            <div
+              v-for="row in cacheRows"
+              :key="row.area + row.key"
+              class="row"
+              style="gap: 8px; align-items: baseline"
+            >
+              <span class="tag">{{ MODULE_LABEL[row.module] || row.module }}</span>
+              <span
+                class="small"
+                style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                :title="row.key"
+                :class="{ dim: row.expired }"
+              >{{ row.context }}<span v-if="row.expired">（已过期）</span></span>
+              <span class="small dim num">{{ humanBytes(row.bytes) }}</span>
+              <span class="small dim num">{{ timeText(row.updatedAt) }}</span>
+              <button class="btn btn--icon btn--sm" title="删除这一条" @click="removeOne(row)">
+                <Icon name="trash" :size="13" />
+              </button>
+            </div>
+          </div>
+          <div v-else class="small dim">当前没有本地缓存</div>
+
+          <div class="row" style="margin-top: 12px; gap: 8px">
+            <button class="btn btn--ghost btn--sm" :disabled="cacheBusy" @click="loadCache">
+              <Icon name="refresh" :size="13" />刷新
+            </button>
+            <button class="btn btn--ghost btn--sm" :disabled="cacheBusy" @click="clearExpired">清理过期</button>
+            <button class="btn btn--ghost btn--sm" :disabled="cacheBusy || !cacheRows.length" @click="clearAllCache">
+              全部清空
+            </button>
+          </div>
+          <p class="small dim" style="margin: 8px 0 0">只清本应用写入的缓存，不会清除登录令牌与主题偏好。</p>
         </section>
 
         <section class="card card--pad">

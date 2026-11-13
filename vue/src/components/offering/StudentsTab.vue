@@ -1,10 +1,11 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Icon from '../Icon.vue'
 import StatusPill from '../StatusPill.vue'
 import EmptyState from '../EmptyState.vue'
-import Modal from '../Modal.vue'
+import TabHead from '../layout/TabHead.vue'
 import Pager from '../Pager.vue'
+import StudentImportModal from './StudentImportModal.vue'
 import { api } from '../../api/endpoints'
 import { confirm } from '../../stores/confirm'
 import { toast, toastError } from '../../stores/toast'
@@ -21,12 +22,13 @@ const total = ref(0)
 const keyword = ref('')
 const statusFilter = ref('')
 
-const addOpen = ref(false)
-const busy = ref(false)
-const formError = ref('')
-const form = reactive({ studentNo: '', name: '', className: '', email: '' })
+const importOpen = ref(false)
+const exporting = ref(false)
+const selected = ref([])
+const removing = ref(false)
 
-const credential = ref(null) // { title, account, password, hint }
+const allChecked = computed(() => rows.value.length > 0 && selected.value.length === rows.value.length)
+const selectedCount = computed(() => selected.value.length)
 
 async function load() {
   loading.value = true
@@ -34,11 +36,13 @@ async function load() {
     const data = await api.students(props.offeringId, {
       page: page.value,
       size,
-      keyword: keyword.value || undefined,
+      keyword: keyword.value.trim() || undefined,
       status: statusFilter.value || undefined,
     })
     rows.value = data?.list || []
     total.value = data?.total || 0
+    // 换页 / 重新查询后清空勾选，避免「选了上一页的学生却在新一页点移除」
+    selected.value = []
   } catch (err) {
     toastError(err, '加载学生名单失败')
   } finally {
@@ -46,41 +50,29 @@ async function load() {
   }
 }
 
-function openAdd() {
-  formError.value = ''
-  Object.assign(form, { studentNo: '', name: '', className: '', email: '' })
-  addOpen.value = true
+function search() {
+  page.value = 1
+  load()
 }
 
-async function submitAdd() {
-  formError.value = ''
-  if (!form.studentNo.trim() || !form.name.trim()) return (formError.value = '学号与姓名必填')
-  busy.value = true
-  try {
-    const created = await api.addStudent(props.offeringId, {
-      studentNo: form.studentNo.trim(),
-      name: form.name.trim(),
-      className: form.className || undefined,
-      email: form.email || undefined,
-    })
-    addOpen.value = false
-    if (created?.initialPassword) {
-      credential.value = {
-        title: '学生已加入',
-        account: created.studentNo,
-        password: created.initialPassword,
-        hint: '首次创建的账号会给一次初始密码，请转告学生并及时修改。',
-      }
-    } else {
-      toast.ok('已加入教学班', `${created?.name || form.name}`)
-    }
-    await load()
-  } catch (err) {
-    const fields = err?.data?.errors
-    formError.value = Array.isArray(fields) && fields.length ? fields.map((f) => f.message).join('；') : err.message
-  } finally {
-    busy.value = false
-  }
+function openImport() {
+  importOpen.value = true
+}
+
+function onImported() {
+  page.value = 1
+  load()
+}
+
+function toggle(row) {
+  const id = row.studentId
+  const index = selected.value.indexOf(id)
+  if (index >= 0) selected.value.splice(index, 1)
+  else selected.value.push(id)
+}
+
+function toggleAll() {
+  selected.value = allChecked.value ? [] : rows.value.map((r) => r.studentId)
 }
 
 async function toggleStatus(row) {
@@ -95,22 +87,28 @@ async function toggleStatus(row) {
 }
 
 async function resetPassword(row) {
-  if (!(await confirm({ title: '重置密码', message: `为「${row.name}」生成新的初始密码？该账号的旧令牌会立即失效。` }))) return
+  const ok = await confirm({
+    title: '重置密码',
+    message: `把「${row.name}」的密码重置为初始密码（学号）？该账号已登录的会话会立即失效，下次登录需修改密码。`,
+    confirmText: '重置',
+  })
+  if (!ok) return
   try {
-    const data = await api.resetStudentPassword(props.offeringId, row.studentId)
-    credential.value = {
-      title: '密码已重置',
-      account: row.studentNo,
-      password: data?.initialPassword,
-      hint: data?.mustChangePassword ? '该账号下次登录需要修改密码。' : '',
-    }
+    await api.resetStudentPassword(props.offeringId, row.studentId)
+    toast.ok('已重置为初始密码', `请告知 ${row.name} 用学号作为密码登录并修改`)
   } catch (err) {
     toastError(err, '重置失败')
   }
 }
 
-async function remove(row) {
-  if (!(await confirm({ title: '移出教学班', message: `将「${row.name}」移出本教学班？已有选题记录可能阻止该操作。`, danger: true, confirmText: '移出' }))) return
+async function removeOne(row) {
+  const ok = await confirm({
+    title: '移出教学班',
+    message: `将「${row.name}」移出本教学班？该生的账号与其他教学班不受影响；已有提交物或成绩时无法移除。`,
+    danger: true,
+    confirmText: '移出',
+  })
+  if (!ok) return
   try {
     await api.deleteStudent(props.offeringId, row.studentId)
     toast.ok('已移出', row.name)
@@ -120,11 +118,49 @@ async function remove(row) {
   }
 }
 
-function copy(text) {
-  navigator.clipboard?.writeText(text).then(
-    () => toast.info('已复制', text),
-    () => toast.error('复制失败', '请手动选中复制'),
-  )
+async function removeSelected() {
+  if (!selectedCount.value) return
+  const ok = await confirm({
+    title: '批量移出教学班',
+    message: `将选中的 ${selectedCount.value} 位学生移出本教学班？只解除本班关联，不删除账号、不影响其他教学班；`
+      + '已有提交物或成绩的学生会被单独跳过。',
+    danger: true,
+    confirmText: `移出 ${selectedCount.value} 人`,
+  })
+  if (!ok) return
+  removing.value = true
+  try {
+    const data = await api.batchRemoveStudents(props.offeringId, selected.value)
+    const failed = (data?.rows || []).filter((r) => !r.removed)
+    if (failed.length) {
+      toast.info(`已移出 ${data?.removed ?? 0} 人，${failed.length} 人未移出`, failed[0]?.message || '')
+    } else {
+      toast.ok(`已移出 ${data?.removed ?? 0} 人`)
+    }
+    await load()
+  } catch (err) {
+    toastError(err, '批量移除失败')
+  } finally {
+    removing.value = false
+  }
+}
+
+async function exportRoster() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    await api.exportStudents(props.offeringId, `学生名单-${props.offeringId}.csv`)
+  } catch (err) {
+    toastError(err, '下载名单失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
+function fmtLogin(value) {
+  return value
+    ? new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '从未登录'
 }
 
 onMounted(load)
@@ -132,28 +168,56 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="row row--wrap" style="margin-bottom: 14px">
-      <input v-model="keyword" class="input" style="width: 200px" placeholder="搜索学号 / 姓名" @keyup.enter="page = 1; load()" />
-      <select v-model="statusFilter" class="select" style="width: 130px" @change="page = 1; load()">
+    <TabHead
+      title="学生名单"
+      description="先添加学生才能发布教学班；支持 Excel 批量导入与名单导出。"
+      :count="total"
+      count-unit=" 人"
+    >
+      <template #actions>
+        <button class="btn btn--ghost btn--sm" :disabled="exporting" @click="exportRoster">
+          <Icon name="download" :size="14" />下载名单
+        </button>
+        <button class="btn btn--primary btn--sm" @click="openImport"><Icon name="plus" :size="14" />添加学生</button>
+      </template>
+    </TabHead>
+
+    <div class="row row--wrap" style="margin-bottom: 12px">
+      <input
+        v-model="keyword"
+        class="input"
+        style="width: 210px"
+        placeholder="搜索学号 / 姓名"
+        @keyup.enter="search"
+      />
+      <select v-model="statusFilter" class="select" style="width: 130px" @change="search">
         <option value="">全部状态</option>
         <option value="ACTIVE">在用</option>
         <option value="DISABLED">已停用</option>
       </select>
-      <button class="btn btn--ghost btn--sm" @click="page = 1; load()"><Icon name="search" :size="14" />查询</button>
+      <button class="btn btn--ghost btn--sm" @click="search"><Icon name="search" :size="14" />查询</button>
       <div class="spacer" />
-      <span class="small dim">共 {{ total }} 人</span>
-      <button class="btn btn--primary btn--sm" @click="openAdd"><Icon name="plus" :size="14" />添加学生</button>
+      <!-- 批量操作只在有选中时出现，未选中不占位 -->
+      <template v-if="selectedCount">
+        <span class="small dim">已选 {{ selectedCount }} 人</span>
+        <button class="btn btn--ghost btn--sm" :disabled="removing" @click="removeSelected">
+          <Icon name="trash" :size="14" />移除学生
+        </button>
+      </template>
     </div>
 
     <div class="card">
       <div v-if="loading" class="card__body"><div class="skeleton" style="height: 200px" /></div>
       <EmptyState v-else-if="!rows.length" icon="users" title="名单还是空的" hint="添加学生后才允许发布教学班">
-        <button class="btn btn--primary btn--sm" style="margin-top: 10px" @click="openAdd">添加学生</button>
+        <button class="btn btn--primary btn--sm" style="margin-top: 10px" @click="openImport">添加学生</button>
       </EmptyState>
       <div v-else class="table-wrap">
         <table class="table">
           <thead>
             <tr>
+              <th style="width: 38px">
+                <input type="checkbox" :checked="allChecked" :aria-label="allChecked ? '取消全选' : '全选'" @change="toggleAll" />
+              </th>
               <th>学生</th>
               <th>班级</th>
               <th>状态</th>
@@ -165,7 +229,15 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in rows" :key="r.studentId">
+            <tr v-for="r in rows" :key="r.studentId" :class="{ 'is-selected': selected.includes(r.studentId) }">
+              <td>
+                <input
+                  type="checkbox"
+                  :checked="selected.includes(r.studentId)"
+                  :aria-label="`选择 ${r.name}`"
+                  @change="toggle(r)"
+                />
+              </td>
               <td>
                 <div class="row" style="gap: 8px">
                   <span class="avatar" style="width: 26px; height: 26px; font-size: 11px">{{ r.name?.slice(0, 1) }}</span>
@@ -182,14 +254,14 @@ onMounted(load)
                 <span class="pill" :class="r.submitted ? 'pill--ok' : ''">{{ r.submitted ? '已提交' : '未提交' }}</span>
               </td>
               <td class="ta-c num mono">{{ r.finalScore ?? '—' }}</td>
-              <td class="small dim">{{ r.lastLoginAt ? new Date(r.lastLoginAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '从未登录' }}</td>
+              <td class="small dim">{{ fmtLogin(r.lastLoginAt) }}</td>
               <td class="ta-r">
                 <div class="row" style="justify-content: flex-end; gap: 4px">
                   <button class="btn btn--icon btn--sm" title="重置密码" @click="resetPassword(r)"><Icon name="lock" :size="14" /></button>
                   <button class="btn btn--icon btn--sm" :title="r.status === 'ACTIVE' ? '停用' : '启用'" @click="toggleStatus(r)">
                     <Icon :name="r.status === 'ACTIVE' ? 'eye' : 'check'" :size="14" />
                   </button>
-                  <button class="btn btn--icon btn--sm" title="移出教学班" @click="remove(r)"><Icon name="trash" :size="14" /></button>
+                  <button class="btn btn--icon btn--sm" title="移出教学班" @click="removeOne(r)"><Icon name="trash" :size="14" /></button>
                 </div>
               </td>
             </tr>
@@ -199,54 +271,17 @@ onMounted(load)
       <Pager v-if="total > size" v-model:page="page" :size="size" :total="total" @update:page="load" />
     </div>
 
-    <Modal v-if="addOpen" title="添加学生" size="sm" @close="addOpen = false">
-      <div style="display: grid; gap: 13px">
-        <div class="field">
-          <label>学号</label>
-          <input v-model="form.studentNo" class="input" placeholder="2023010104" />
-        </div>
-        <div class="field">
-          <label>姓名</label>
-          <input v-model="form.name" class="input" placeholder="赵六" />
-        </div>
-        <div class="field">
-          <label>班级（选填）</label>
-          <input v-model="form.className" class="input" placeholder="计科2301" />
-        </div>
-        <div class="field">
-          <label>邮箱（选填）</label>
-          <input v-model="form.email" class="input" placeholder="student@sss.local" />
-        </div>
-        <div v-if="formError" class="alert alert--danger">
-          <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />{{ formError }}
-        </div>
-        <div class="alert alert--info">
-          <Icon name="lock" :size="15" style="flex: none; margin-top: 2px" />
-          新账号会得到一次性初始密码，仅在创建成功时显示一次。
-        </div>
-      </div>
-      <template #foot>
-        <button class="btn btn--ghost" @click="addOpen = false">取消</button>
-        <button class="btn btn--primary" :disabled="busy" @click="submitAdd"><span v-if="busy" class="spinner" />加入教学班</button>
-      </template>
-    </Modal>
-
-    <Modal v-if="credential" :title="credential.title" size="sm" @close="credential = null">
-      <div class="alert alert--warn" style="margin-bottom: 14px">
-        <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
-        初始密码只显示这一次，关闭后无法再次查看（只能重置）。
-      </div>
-      <dl class="dl" style="grid-template-columns: 64px 1fr">
-        <dt>账号</dt>
-        <dd class="mono">{{ credential.account }}</dd>
-        <dt>初始密码</dt>
-        <dd class="mono" style="font-size: 15px">{{ credential.password }}</dd>
-      </dl>
-      <p v-if="credential.hint" class="small dim" style="margin-top: 10px">{{ credential.hint }}</p>
-      <template #foot>
-        <button class="btn btn--ghost" @click="copy(credential.password)">复制密码</button>
-        <button class="btn btn--primary" @click="credential = null">我已记录</button>
-      </template>
-    </Modal>
+    <StudentImportModal
+      v-if="importOpen"
+      :offering-id="offeringId"
+      @close="importOpen = false"
+      @imported="onImported"
+    />
   </div>
 </template>
+
+<style scoped>
+.table tbody tr.is-selected {
+  background: var(--brand-ring, rgba(0, 0, 0, 0.04));
+}
+</style>

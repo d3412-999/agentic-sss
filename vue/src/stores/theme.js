@@ -13,7 +13,7 @@ const VALID = new Set(['warm', 'light', 'dark'])
 
 export const THEMES = [
   { key: 'warm', label: '暖色', icon: 'sun', hint: '米黄暖色调，日间默认' },
-  { key: 'light', label: '浅色', icon: 'sun', hint: '原有白色工作台风格' },
+  { key: 'light', label: '浅色', icon: 'sun', hint: '原有白色后台风格' },
   { key: 'dark', label: '深色', icon: 'moon', hint: '原有深色夜间风格' },
 ]
 

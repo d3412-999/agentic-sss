@@ -88,7 +88,7 @@ function buildHeaders({ auth = true, idempotencyKey, body, headers = {} }) {
  * - idempotencyKey 会变成 Idempotency-Key 头（后端 @Idempotent 接口需要）
  */
 export async function request(path, options = {}) {
-  const { method = 'GET', body, auth = true, idempotencyKey, _retried = false } = options
+  const { method = 'GET', body, auth = true, idempotencyKey, _retried = false, signal } = options
   const headers = buildHeaders(options)
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData
 
@@ -98,9 +98,14 @@ export async function request(path, options = {}) {
       method,
       headers,
       credentials: 'same-origin',
+      signal,
       body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     })
-  } catch {
+  } catch (err) {
+    // 主动中断不是「后端没启动」，必须区分开，否则组件卸载会弹一条假错误
+    if (err?.name === 'AbortError') {
+      throw new ApiError('请求已取消', -2, 0)
+    }
     throw new ApiError('无法连接后端，请确认后端已启动，且 vue/.env 的 VITE_API_TARGET 指向正确端口', -1, 0)
   }
 
@@ -135,20 +140,42 @@ export async function request(path, options = {}) {
 
 /**
  * 带进度的上传（XMLHttpRequest，fetch 无法报告上传进度）。
- * 用于源码 zip / 报告 pdf 这类大文件。
+ *
+ * - 支持单个 `file` 或多个 `files`：多文件时同一个字段名重复 append，后端用 `List<MultipartFile>` 接收；
+ * - `signal` 用于取消未完成的上传（组件卸载、用户点「取消」）；
+ * - 取消时抛 code = -2 的错误，调用方据此区分「用户主动取消」与「真的失败」。
  */
-export function upload(path, { file, fieldName = 'file', query = {}, onProgress, method = 'POST' } = {}) {
+export function upload(path, { file, files, fieldName = 'file', query = {}, onProgress, method = 'POST', signal } = {}) {
   return new Promise((resolve, reject) => {
+    const list = Array.isArray(files) ? files.filter(Boolean) : file ? [file] : []
+    if (!list.length) {
+      reject(new ApiError('没有待上传的文件', -1, 0))
+      return
+    }
+    if (signal?.aborted) {
+      reject(new ApiError('已取消上传', -2, 0))
+      return
+    }
+
     const qs = toQuery(query)
     const xhr = new XMLHttpRequest()
     xhr.open(method, `${API_BASE}${path}${qs}`)
     if (session.accessToken) xhr.setRequestHeader('Authorization', `Bearer ${session.accessToken}`)
     xhr.setRequestHeader('Accept', 'application/json')
 
+    const onAbort = () => xhr.abort()
+    signal?.addEventListener('abort', onAbort)
+
+    const finish = (fn, value) => {
+      signal?.removeEventListener('abort', onAbort)
+      fn(value)
+    }
+
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
     }
-    xhr.onerror = () => reject(new ApiError('上传失败：网络中断', -1, 0))
+    xhr.onerror = () => finish(reject, new ApiError('上传失败：网络中断', -1, 0))
+    xhr.onabort = () => finish(reject, new ApiError('已取消上传', -2, 0))
     xhr.onload = () => {
       let payload = null
       try {
@@ -158,18 +185,18 @@ export function upload(path, { file, fieldName = 'file', query = {}, onProgress,
       }
       const traceId = xhr.getResponseHeader('X-Trace-Id') || ''
       if (xhr.status >= 200 && xhr.status < 300 && (!payload || payload.code === 0)) {
-        resolve(payload ? payload.data : null)
+        finish(resolve, payload ? payload.data : null)
       } else if (xhr.status === 401) {
         clearSession()
         window.dispatchEvent(new CustomEvent('sss:unauthorized'))
-        reject(new ApiError('登录状态已失效，请重新登录', 40101, 401, traceId))
+        finish(reject, new ApiError('登录状态已失效，请重新登录', 40101, 401, traceId))
       } else {
-        reject(new ApiError(payload?.message || `上传失败 HTTP ${xhr.status}`, payload?.code ?? xhr.status, xhr.status, traceId, payload?.data))
+        finish(reject, new ApiError(payload?.message || `上传失败 HTTP ${xhr.status}`, payload?.code ?? xhr.status, xhr.status, traceId, payload?.data))
       }
     }
 
     const form = new FormData()
-    form.append(fieldName, file)
+    list.forEach((item) => form.append(fieldName, item))
     xhr.send(form)
   })
 }

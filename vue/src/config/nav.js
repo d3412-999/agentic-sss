@@ -1,62 +1,107 @@
 /**
- * 侧边栏与命令面板共用的导航配置（单一事实来源）。
+ * 一级导航（功能集块）配置：单一事实来源，供侧栏与命令面板共用。
  *
- * - `group` 的先后顺序就是侧边栏的分组顺序，命令面板按同样顺序拍平。
- * - `roles` 的语义与路由 meta.roles 一致：空数组/缺省表示登录即可见。
- * - `badge` 只给侧边栏使用（tasks=进行中任务数，unread=未读通知数）。
- * - `paletteLabel` 是命令面板里更短的叫法（历史文案），缺省时用 `label`。
+ * 结构：`{ group, icon, children: [{ to, label, badge? }] }`
+ * - `group` 是左侧一级栏的集块名；`icon` 是集块图标，折叠态只显示它。
+ * - `children` 是集块展开后的子功能，点击即跳转；只有一个子项时集块直接当入口用。
+ * - 教师端与学生端各自维护一棵完整的树，条目归属由所在树决定，不再靠 roles 过滤拼装。
+ *
+ * 注意：`to` 与路由表一一对应，这里只决定「在哪一端、以什么层级露出」。
  */
-export const NAV_GROUPS = [
+
+export const TEACHER_NAV = [
   {
-    group: '工作台',
-    items: [
-      { to: '/', label: '概览', icon: 'home', roles: ['TEACHER', 'STUDENT', 'ADMIN'] },
-      { to: '/offerings', label: '教学班', icon: 'book', roles: ['TEACHER'] },
-      { to: '/courses', label: '我的课程', icon: 'book', roles: ['STUDENT'] },
-      { to: '/selections', label: '我的选题', icon: 'target', roles: ['STUDENT'] },
-      {
-        to: '/grades',
-        label: '成绩中心',
-        paletteLabel: '成绩',
-        icon: 'chart',
-        roles: ['TEACHER', 'STUDENT'],
-      },
-    ],
+    group: '教学班',
+    icon: 'book',
+    children: [{ to: '/offerings', label: '我的教学班' }],
+  },
+  {
+    group: '成绩',
+    icon: 'chart',
+    children: [{ to: '/grades', label: '成绩中心' }],
   },
   {
     group: '协作',
-    items: [
-      {
-        to: '/tasks',
-        label: '任务中心',
-        icon: 'clock',
-        roles: ['TEACHER', 'STUDENT', 'ADMIN'],
-        badge: 'tasks',
-      },
-      {
-        to: '/notifications',
-        label: '站内通知',
-        icon: 'bell',
-        roles: ['TEACHER', 'STUDENT', 'ADMIN'],
-        badge: 'unread',
-      },
+    icon: 'clock',
+    children: [
+      { to: '/tasks', label: '任务中心', badge: 'tasks' },
+      { to: '/notifications', label: '站内通知', badge: 'unread' },
     ],
   },
   {
     group: '个人',
-    items: [{ to: '/settings', label: '设置', icon: 'gear', roles: ['TEACHER', 'STUDENT', 'ADMIN'] }],
+    icon: 'gear',
+    children: [{ to: '/settings', label: '账号设置' }],
   },
 ]
 
-/** 侧边栏：按角色过滤条目，没有可见条目的分组整组隐藏。 */
-export function navGroupsForRole(role) {
-  return NAV_GROUPS.map((group) => ({
-    ...group,
-    items: group.items.filter((item) => item.roles.includes(role)),
-  })).filter((group) => group.items.length > 0)
+export const STUDENT_NAV = [
+  {
+    group: '我的学习',
+    icon: 'book',
+    children: [
+      { to: '/courses', label: '我的课程' },
+      { to: '/selections', label: '我的选题' },
+    ],
+  },
+  {
+    group: '我的成绩',
+    icon: 'chart',
+    children: [{ to: '/grades', label: '成绩中心' }],
+  },
+  {
+    group: '协作',
+    icon: 'clock',
+    children: [
+      { to: '/tasks', label: '任务中心', badge: 'tasks' },
+      { to: '/notifications', label: '站内通知', badge: 'unread' },
+    ],
+  },
+  {
+    group: '个人',
+    icon: 'gear',
+    children: [{ to: '/settings', label: '账号设置' }],
+  },
+]
+
+/** 管理员平台只服务一个用途：教师账号与权限管理。 */
+export const ADMIN_NAV = [
+  {
+    group: '平台',
+    icon: 'users',
+    children: [{ to: '/admin/teachers', label: '教师账号' }],
+  },
+]
+
+const NAV_BY_ROLE = {
+  TEACHER: TEACHER_NAV,
+  STUDENT: STUDENT_NAV,
+  ADMIN: ADMIN_NAV,
 }
 
-/** 命令面板：按侧边栏的分组顺序拍平后的可访问条目。 */
+/** 侧栏：该角色自己的导航树。 */
+export function navGroupsForRole(role) {
+  return NAV_BY_ROLE[role] || []
+}
+
+/** 命令面板：按一级栏顺序拍平，子项继承集块图标。 */
 export function navItemsForRole(role) {
-  return NAV_GROUPS.flatMap((group) => group.items).filter((item) => item.roles.includes(role))
+  return navGroupsForRole(role).flatMap((group) =>
+    group.children.map((child) => ({ ...child, icon: child.icon || group.icon, group: group.group })),
+  )
+}
+
+/**
+ * 当前路径命中哪个集块，只用于高亮与自动展开，不参与任何路由判断。
+ * `''` 表示「根路径」，即集块自身的落地地址（如 `/offerings/:id` 命中 `/offerings`）。
+ */
+export function activeGroupFor(role, path) {
+  const groups = navGroupsForRole(role)
+  return (
+    groups.find((group) =>
+      group.children.some((child) =>
+        child.to === '/' ? path === '/' : path === child.to || path.startsWith(`${child.to}/`),
+      ),
+    ) || null
+  )
 }

@@ -4,11 +4,16 @@ import { useRouter } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import StatusPill from '../components/StatusPill.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
+import ToolbarBar from '../components/layout/ToolbarBar.vue'
+import TeacherSummary from '../components/summary/TeacherSummary.vue'
 import Pager from '../components/Pager.vue'
 import Drawer from '../components/Drawer.vue'
 import Modal from '../components/Modal.vue'
 import { api } from '../api/endpoints'
+import { confirm } from '../stores/confirm'
 import { toast, toastError } from '../stores/toast'
+import { useDraft } from '../composables/useDraft'
 
 const router = useRouter()
 
@@ -27,18 +32,17 @@ const STATUS_TABS = [
   { key: 'ARCHIVED', label: '已归档' },
 ]
 
-const courses = ref([])
 const offerings = ref([])
 
 /* ---------- 新建开课 ---------- */
 const createOpen = ref(false)
 const creating = ref(false)
+// 已移除：课程模板、每人最多选几题、答辩模式、答辩题目数。
+// 这些不再出现在表单里，也不随请求提交，服务端统一按「不限 / 固定 AI 异步答辩」处理。
 const form = reactive({
-  courseId: '',
   semester: '',
   className: '',
   description: '',
-  topicSelectLimit: 3,
   defense: 40,
   code: 35,
   report: 25,
@@ -46,20 +50,49 @@ const form = reactive({
   selectEnd: '',
   submitDeadline: '',
   defenseStart: '',
-  defenseEnd: '',
-  defenseMode: 'AI_ASYNC',
-  questionCount: 5,
-  maxAnswerSeconds: 180,
-  allowRetry: true,
 })
 const weightSum = computed(() => Number(form.defense) + Number(form.code) + Number(form.report))
 const weightOk = computed(() => weightSum.value === 100)
 const formError = ref('')
 
-/* ---------- 新建课程模板 ---------- */
-const courseOpen = ref(false)
-const courseBusy = ref(false)
-const courseForm = reactive({ code: '', name: '', credit: 2, description: '' })
+/**
+ * 新建教学班草稿。
+ * 这个表单 9 个字段，权重和日期都还要手工调，填到一半被 Esc 关掉最招人烦。
+ * `draftArmed` 控制「从什么时候开始记」：恢复询问还没结束时不要写盘，
+ * 否则会把刚读出来的默认值当成用户的草稿存下来。
+ */
+const draftArmed = ref(false)
+const createDraft = useDraft({
+  module: 'draft',
+  context: () => 'offering-new',
+  source: () => (draftArmed.value ? { ...form } : null),
+  apply: (data) => {
+    Object.keys(form).forEach((key) => {
+      if (data[key] !== undefined && data[key] !== null) form[key] = data[key]
+    })
+  },
+  // 连班名都没填就当空表单，不占地方
+  isEmpty: (data) => !String(data?.className || '').trim(),
+})
+
+async function restoreDraft() {
+  createDraft.resume()
+  const data = await createDraft.peek()
+  if (!data) return
+  const ok = await confirm({
+    title: '恢复未完成的教学班？',
+    message: `检测到上次填到一半的「${data.className || '未命名教学班'}」，是否继续填写？`,
+    confirmText: '恢复',
+    cancelText: '重新填写',
+  })
+  if (ok) {
+    await createDraft.restore()
+    toast.info('已恢复草稿', '创建成功后会自动清除')
+  } else {
+    await createDraft.clear()
+    createDraft.resume()
+  }
+}
 
 /* ---------- 发布阻塞项 ---------- */
 const blockers = ref(null)
@@ -83,25 +116,13 @@ async function load() {
   }
 }
 
-async function loadCourses() {
-  try {
-    const data = await api.courses({ page: 1, size: 100 })
-    courses.value = data?.list || []
-  } catch {
-    courses.value = []
-  }
-}
-
-function openCreate() {
+async function openCreate() {
   formError.value = ''
-  if (!courses.value.length) {
-    toast.info('先建课程模板', '教学班需要挂在一门课程模板下，请先新建课程')
-    courseOpen.value = true
-    return
-  }
-  form.courseId = form.courseId || courses.value[0].id
   form.semester = form.semester || defaultSemester()
   createOpen.value = true
+  draftArmed.value = false
+  await restoreDraft()
+  draftArmed.value = true
 }
 
 function defaultSemester() {
@@ -118,9 +139,18 @@ function todayPlus(days) {
   return d.toISOString().slice(0, 10)
 }
 
+/** 后端把具体原因放在 message 与 data.errors，traceId 在响应头，一并展示便于定位。 */
+function errorText(err) {
+  const fields = err?.data?.errors
+  const detail = Array.isArray(fields) && fields.length
+    ? fields.map((f) => f.message).filter(Boolean).join('；')
+    : ''
+  const message = detail || err?.message || '请求失败'
+  return err?.traceId ? `${message}（traceId: ${err.traceId}）` : message
+}
+
 async function submitCreate() {
   formError.value = ''
-  if (!form.courseId) return (formError.value = '请选择课程模板')
   if (!form.semester.trim()) return (formError.value = '请填写学期')
   if (!form.className.trim()) return (formError.value = '请填写教学班名称')
   if (!weightOk.value) return (formError.value = `三项权重之和必须为 100，当前为 ${weightSum.value}`)
@@ -130,65 +160,32 @@ async function submitCreate() {
   creating.value = true
   try {
     const created = await api.createOffering({
-      courseId: form.courseId,
       semester: form.semester.trim(),
       className: form.className.trim(),
       description: form.description || undefined,
-      topicSelectLimit: Number(form.topicSelectLimit),
       weights: { defense: Number(form.defense), code: Number(form.code), report: Number(form.report) },
-      defenseConfig: {
-        defenseMode: form.defenseMode,
-        questionCount: Number(form.questionCount),
-        maxAnswerSeconds: Number(form.maxAnswerSeconds),
-        allowRetry: form.allowRetry,
-        language: 'zh-CN',
-      },
       timeline: {
         selectStart: form.selectStart,
         selectEnd: form.selectEnd,
         submitDeadline: form.submitDeadline || undefined,
         defenseStart: form.defenseStart || undefined,
-        defenseEnd: form.defenseEnd || undefined,
       },
     })
     toast.ok('教学班已创建', '状态为草稿，添加学生与题目后即可发布')
     createOpen.value = false
+    // 提交成功即清理，不留孤儿草稿
+    await createDraft.clear()
     await load()
     if (created?.id) router.push({ name: 'offering-workbench', params: { offeringId: created.id } })
   } catch (err) {
-    const fields = err?.data?.errors
-    formError.value = Array.isArray(fields) && fields.length
-      ? fields.map((f) => f.message).join('；')
-      : err.message
+    formError.value = errorText(err)
   } finally {
     creating.value = false
   }
 }
 
-async function submitCourse() {
-  if (!courseForm.code.trim() || !courseForm.name.trim()) return
-  courseBusy.value = true
-  try {
-    const created = await api.createCourse({
-      code: courseForm.code.trim(),
-      name: courseForm.name.trim(),
-      credit: Number(courseForm.credit) || undefined,
-      description: courseForm.description || undefined,
-    })
-    toast.ok('课程模板已创建', created?.name)
-    courseOpen.value = false
-    courseForm.code = ''
-    courseForm.name = ''
-    courseForm.description = ''
-    await loadCourses()
-    form.courseId = created?.id || form.courseId
-    form.semester = form.semester || defaultSemester()
-    createOpen.value = true
-  } catch (err) {
-    toastError(err, '创建课程失败')
-  } finally {
-    courseBusy.value = false
-  }
+function openWorkbench(id) {
+  router.push({ name: 'offering-workbench', params: { offeringId: id } })
 }
 
 async function act(row, action) {
@@ -214,7 +211,7 @@ async function act(row, action) {
 }
 
 onMounted(async () => {
-  await Promise.all([load(), loadCourses()])
+  await load()
   form.selectStart = todayPlus(0)
   form.selectEnd = todayPlus(14)
   form.submitDeadline = todayPlus(60)
@@ -223,101 +220,86 @@ onMounted(async () => {
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>教学班</h1>
-        <p>课程模板 → 开课（教学班）→ 出题 → 发布。发布前系统会自动检查权重、时限与学生名单。</p>
-      </div>
-      <div class="page-head__actions">
-        <button class="btn btn--ghost" @click="courseOpen = true"><Icon name="folder" :size="15" />课程模板</button>
+    <PageHeader
+      title="我的教学班"
+      description="按「创建 → 补充名单与题目 → 发布」的顺序推进。发布前系统会自动检查权重、时限与学生名单。"
+    >
+      <template #meta>
+        <span class="pill pill--brand">共 {{ total }} 个教学班</span>
+      </template>
+      <template #actions>
         <button class="btn btn--primary" @click="openCreate"><Icon name="plus" :size="15" />新建教学班</button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
-    <div class="card">
-      <div class="card__head" style="flex-wrap: wrap; gap: 8px">
-        <div class="tabs">
-          <button
-            v-for="t in STATUS_TABS"
-            :key="t.key"
-            class="tabs__item"
-            :class="{ 'is-active': filters.status === t.key }"
-            @click="filters.status = t.key; page = 1; load()"
-          >
-            {{ t.label }}
-          </button>
-        </div>
-        <div class="spacer" />
-        <input v-model="filters.keyword" class="input" style="width: 200px" placeholder="搜索课程 / 班级" @keyup.enter="page = 1; load()" />
-        <button class="btn btn--ghost btn--sm" @click="page = 1; load()"><Icon name="search" :size="14" />查询</button>
-      </div>
+    <TeacherSummary />
+
+    <section class="card">
+      <ToolbarBar>
+        <template #left>
+          <div class="tabs">
+            <button
+              v-for="t in STATUS_TABS"
+              :key="t.key"
+              class="tabs__item"
+              :class="{ 'is-active': filters.status === t.key }"
+              @click="filters.status = t.key; page = 1; load()"
+            >
+              {{ t.label }}
+            </button>
+          </div>
+        </template>
+        <template #right>
+          <input v-model="filters.keyword" class="input" style="width: 220px" placeholder="搜索课程 / 班级" @keyup.enter="page = 1; load()" />
+          <button class="btn btn--ghost btn--sm" @click="page = 1; load()"><Icon name="search" :size="14" />查询</button>
+        </template>
+      </ToolbarBar>
 
       <div v-if="loading" class="card__body">
         <div class="skeleton" style="height: 220px" />
       </div>
-      <EmptyState v-else-if="!rows.length" icon="book" title="还没有教学班" hint="新建教学班需要先有一门课程模板">
+      <EmptyState v-else-if="!rows.length" icon="book" title="还没有教学班" hint="填写学期与教学班名称即可创建，题目与名单稍后补充">
         <button class="btn btn--primary btn--sm" style="margin-top: 10px" @click="openCreate">新建教学班</button>
       </EmptyState>
-      <div v-else class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>课程 / 班级</th>
-              <th>状态</th>
-              <th class="ta-r">学生</th>
-              <th class="ta-r">题目</th>
-              <th class="ta-r">已选</th>
-              <th>学期</th>
-              <th class="ta-r">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in rows" :key="r.id">
-              <td>
-                <div class="table__primary">{{ r.courseName }}</div>
-                <div class="table__sub">{{ r.className }}</div>
-              </td>
-              <td><StatusPill :status="r.status" /></td>
-              <td class="ta-r num">{{ r.studentCount }}</td>
-              <td class="ta-r num">{{ r.topicCount }}</td>
-              <td class="ta-r num">{{ r.selectionCount }}</td>
-              <td class="small dim mono">{{ r.semester }}</td>
-              <td class="ta-r">
-                <div class="row" style="justify-content: flex-end; gap: 6px">
-                  <button
-                    class="btn btn--ghost btn--sm"
-                    @click="router.push({ name: 'offering-workbench', params: { offeringId: r.id } })"
-                  >
-                    工作台
-                  </button>
-                  <button v-if="r.status === 'DRAFT'" class="btn btn--soft btn--sm" @click="act(r, 'publish')">发布</button>
-                  <button v-if="r.status === 'PUBLISHED'" class="btn btn--ghost btn--sm" @click="act(r, 'close')">关闭</button>
-                  <button
-                    v-if="r.status === 'PUBLISHED' || r.status === 'CLOSED'"
-                    class="btn btn--ghost btn--sm"
-                    @click="act(r, 'archive')"
-                  >
-                    归档
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-else class="card__body card__body--flush">
+        <div
+          v-for="r in rows"
+          :key="r.id"
+          class="list-row offering-row"
+          @click="openWorkbench(r.id)"
+        >
+          <span class="offering-row__icon"><Icon name="book" :size="16" /></span>
+          <div style="min-width: 0; flex: 1">
+            <div class="row" style="gap: 8px">
+              <span class="list-row__title truncate">{{ r.courseName || '未关联课程' }}</span>
+              <StatusPill :status="r.status" />
+            </div>
+            <div class="list-row__meta truncate">
+              {{ r.className }} · {{ r.semester }} · {{ r.studentCount }} 名学生 ·
+              {{ r.topicCount }} 道题 · {{ r.selectionCount }} 人已选
+            </div>
+          </div>
+          <div class="row offering-row__ops" style="gap: 6px" @click.stop>
+            <button class="btn btn--ghost btn--sm" @click="openWorkbench(r.id)">进入课程</button>
+            <button v-if="r.status === 'DRAFT'" class="btn btn--soft btn--sm" @click="act(r, 'publish')">发布</button>
+            <button v-if="r.status === 'PUBLISHED'" class="btn btn--ghost btn--sm" @click="act(r, 'close')">关闭</button>
+            <button
+              v-if="r.status === 'PUBLISHED' || r.status === 'CLOSED'"
+              class="btn btn--ghost btn--sm"
+              @click="act(r, 'archive')"
+            >
+              归档
+            </button>
+          </div>
+        </div>
       </div>
       <Pager v-if="total > size" v-model:page="page" :size="size" :total="total" @update:page="load" />
-    </div>
+    </section>
 
     <!-- 新建教学班 -->
     <Drawer v-if="createOpen" title="新建教学班" wide @close="createOpen = false">
       <div style="display: grid; gap: 16px">
         <div class="form-grid">
-          <div class="field span-2">
-            <label>课程模板</label>
-            <select v-model="form.courseId" class="select">
-              <option v-for="c in courses" :key="c.id" :value="c.id">{{ c.code }} · {{ c.name }}</option>
-            </select>
-          </div>
           <div class="field">
             <label>学期</label>
             <input v-model="form.semester" class="input" placeholder="2026-2027-1" />
@@ -376,27 +358,6 @@ onMounted(async () => {
           </div>
         </div>
 
-        <div>
-          <div class="section-title"><Icon name="flag" :size="14" />选题与答辩设置</div>
-          <div class="form-grid form-grid--3">
-            <div class="field">
-              <label>每人最多选几题</label>
-              <input v-model.number="form.topicSelectLimit" type="number" min="1" max="10" class="input" />
-            </div>
-            <div class="field">
-              <label>答辩模式</label>
-              <select v-model="form.defenseMode" class="select">
-                <option value="AI_ASYNC">AI 异步答辩</option>
-                <option value="LIVE">在线实时答辩</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>答辩题目数</label>
-              <input v-model.number="form.questionCount" type="number" min="1" max="20" class="input" />
-            </div>
-          </div>
-        </div>
-
         <div v-if="formError" class="alert alert--danger">
           <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />{{ formError }}
         </div>
@@ -409,34 +370,6 @@ onMounted(async () => {
         </button>
       </template>
     </Drawer>
-
-    <!-- 新建课程模板 -->
-    <Modal v-if="courseOpen" title="新建课程模板" size="sm" @close="courseOpen = false">
-      <div style="display: grid; gap: 14px">
-        <div class="field">
-          <label>课程代码</label>
-          <input v-model="courseForm.code" class="input" placeholder="例如 CS2301" maxlength="32" />
-        </div>
-        <div class="field">
-          <label>课程名称</label>
-          <input v-model="courseForm.name" class="input" placeholder="面向对象程序设计课程设计" maxlength="128" />
-        </div>
-        <div class="field">
-          <label>学分</label>
-          <input v-model.number="courseForm.credit" type="number" min="0" step="0.5" class="input" />
-        </div>
-        <div class="field">
-          <label>简介</label>
-          <textarea v-model="courseForm.description" class="textarea" style="min-height: 70px" />
-        </div>
-      </div>
-      <template #foot>
-        <button class="btn btn--ghost" @click="courseOpen = false">取消</button>
-        <button class="btn btn--primary" :disabled="courseBusy" @click="submitCourse">
-          <span v-if="courseBusy" class="spinner" />创建
-        </button>
-      </template>
-    </Modal>
 
     <!-- 发布阻塞项 -->
     <Modal v-if="blockers" title="暂时无法发布" @close="blockers = null">
@@ -455,3 +388,37 @@ onMounted(async () => {
     </Modal>
   </div>
 </template>
+
+<style scoped>
+/* 行列表：整行可点进课程详情，右侧操作独立成组不触发跳转 */
+.offering-row {
+  cursor: pointer;
+  gap: 12px;
+}
+
+.offering-row__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.offering-row__ops {
+  flex: none;
+}
+
+@media (max-width: 900px) {
+  .offering-row {
+    flex-wrap: wrap;
+  }
+
+  .offering-row__ops {
+    width: 100%;
+    padding-left: 44px;
+  }
+}
+</style>

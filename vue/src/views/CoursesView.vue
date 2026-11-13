@@ -3,6 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import Icon from '../components/Icon.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PageHeader from '../components/layout/PageHeader.vue'
+import StepFlow from '../components/layout/StepFlow.vue'
+import StudentSummary from '../components/summary/StudentSummary.vue'
+import { STUDENT_FLOW } from '../config/flow'
 import { api, reasonText } from '../api/endpoints'
 import { toastError } from '../stores/toast'
 
@@ -50,16 +54,20 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-head">
-      <div>
-        <h1>我的课程</h1>
-        <p>只展示教师已发布的教学班。选题窗口内可以挑题，名额由数据库原子预占。</p>
-      </div>
-      <div class="page-head__actions">
+    <PageHeader
+      title="我的课程"
+      description="只展示教师已发布的教学班。选题窗口内可以挑题，名额由数据库原子预占。"
+    >
+      <template #steps>
+        <StepFlow :steps="STUDENT_FLOW" current="course" dense />
+      </template>
+      <template #actions>
         <input v-model="keyword" class="input" style="width: 220px" placeholder="搜索课程 / 教师 / 班级" />
         <RouterLink to="/selections" class="btn btn--ghost"><Icon name="target" :size="15" />我的选题</RouterLink>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
+
+    <StudentSummary />
 
     <div v-if="loading" class="grid grid--2">
       <div v-for="i in 4" :key="i" class="skeleton" style="height: 180px" />
@@ -85,7 +93,7 @@ onMounted(load)
             <div>
               <div class="small dim">已选题目</div>
               <div class="num" style="font-size: 18px; font-weight: 650">
-                {{ o.mySelectionCount }}<small class="dim" style="font-size: 12px"> / {{ o.topicSelectLimit }}</small>
+                {{ o.mySelectionCount }}<small class="dim" style="font-size: 12px"> / {{ o.topicSelectLimit ?? '不限' }}</small>
               </div>
             </div>
             <div>
