@@ -1,0 +1,12 @@
+{
+  "name": "agentic-sss",
+  "private": true,
+  "version": "0.1.0",
+  "description": "仓库根目录只是便捷入口：真正的前端工程在 vue/。这里的脚本等价于 cd vue && npm run <script>。",
+  "scripts": {
+    "dev": "npm --prefix vue run dev",
+    "build": "npm --prefix vue run build",
+    "preview": "npm --prefix vue run preview",
+    "install:vue": "npm --prefix vue install"
+  }
+}

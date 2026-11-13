@@ -10,7 +10,12 @@ from app.schemas.code import CodeReviewRequest
 from app.schemas.common import DimensionScore
 from app.schemas.defense import DefenseEvaluateRequest, DefenseQuestionRequest
 from app.schemas.report import ReportEvaluateRequest
-from app.services.scoring import clamp_score, grade_of, weighted_total
+from app.services.scoring import (
+    REPORT_DIMENSION_SPECS,
+    clamp_score,
+    grade_of,
+    weighted_total,
+)
 
 
 def mock_defense_questions(request: DefenseQuestionRequest) -> dict[str, Any]:
@@ -23,6 +28,8 @@ def mock_defense_questions(request: DefenseQuestionRequest) -> dict[str, Any]:
     issue = request.source.issues[0] if request.source.issues else None
 
     question_types = ["DESIGN", "CODE", "REPORT", "CONCEPT", "EXTENSION"]
+    dimensions = request.config.dimensions or ["P1_RETELL", "P2_REASON", "P3_MODIFY"]
+    difficulties = _mock_difficulty_plan(request.config.difficulty_mix, count)
     questions: list[dict[str, Any]] = []
 
     for index in range(count):
@@ -56,7 +63,9 @@ def mock_defense_questions(request: DefenseQuestionRequest) -> dict[str, Any]:
         questions.append(
             {
                 "type": question_type,
-                "difficulty": "MEDIUM" if index % 2 == 0 else "HARD",
+                "difficulty": difficulties[index],
+                "dimension": dimensions[index % len(dimensions)],
+                "bonus": False,
                 "question": text,
                 "expected_points": points,
                 "reference_answer": "参考要点：" + "；".join(points),
@@ -65,7 +74,35 @@ def mock_defense_questions(request: DefenseQuestionRequest) -> dict[str, Any]:
             }
         )
 
+    # 加分题：恒定 1 道（按配置数量），排在最后，不计入总分
+    for index in range(max(0, request.config.bonus_count)):
+        points = ["能把已有能力迁移到新场景", "能说明取舍与风险"]
+        questions.append(
+            {
+                "type": "EXTENSION",
+                "difficulty": "MEDIUM",
+                "dimension": "IS_BONUS",
+                "bonus": True,
+                "question": f"如果给「{topic_title}」再加一个你从未实现过的能力（例如离线同步或审计回放），你会怎么设计？说出最关键的两个取舍。",
+                "expected_points": points,
+                "reference_answer": "参考要点：" + "；".join(points),
+                "source_refs": [{"type": "REPORT_SECTION", "section": section_title}],
+                "max_answer_seconds": max(60, request.config.bonus_max_answer_seconds),
+            }
+        )
+
     return {"questions": questions}
+
+
+def _mock_difficulty_plan(mix: dict[str, int], count: int) -> list[str]:
+    """按难度配额展开成逐题难度列表；配额缺失时按 MEDIUM/HARD 交替兜底。"""
+    if not mix:
+        return ["MEDIUM" if index % 2 == 0 else "HARD" for index in range(count)]
+    plan: list[str] = []
+    for key in ("EASY", "MEDIUM", "HARD"):
+        plan.extend([key] * max(0, int(mix.get(key, 0))))
+    plan = (plan + ["MEDIUM"] * count)[:count]
+    return plan if len(plan) == count else (plan + ["MEDIUM"] * (count - len(plan)))
 
 
 def mock_defense_evaluation(request: DefenseEvaluateRequest) -> dict[str, Any]:
@@ -90,9 +127,22 @@ def mock_defense_evaluation(request: DefenseEvaluateRequest) -> dict[str, Any]:
         else:
             score = clamp_score(55 + min(len(text) / 12, 35))
             comment = "回答完整，能结合项目说明" if score >= 80 else "回答偏短，论据不足"
-        question_scores.append({"question_id": question.id, "score": score, "comment": comment})
+        question_scores.append(
+            {
+                "question_id": question.id,
+                "score": score,
+                "comment": comment,
+                "dimension": question.dimension,
+                "evidence": text[:120],
+                "passed": score >= 60,
+            }
+        )
 
-    answered = [item for item in question_scores if item["score"] > 0]
+    bonus_ids = {question.id for question in request.questions if question.bonus}
+    # 加分题不计入总分：只影响自己那一行的展示
+    answered = [
+        item for item in question_scores if item["score"] > 0 and item["question_id"] not in bonus_ids
+    ]
     accuracy = sum(item["score"] for item in answered) / len(answered) if answered else 0
     avg_length = (
         sum(len(transcript_map[item["question_id"]].text) for item in answered) / len(answered)
@@ -171,4 +221,72 @@ def mock_code_review(request: CodeReviewRequest) -> dict[str, Any]:
             "为关键业务逻辑补充异常处理说明",
         ],
         "summary": f"共检查 {len(request.java_files)} 个源码文件、{issue_count} 条静态问题。",
+    }
+
+
+def mock_code_aggregate(request) -> dict[str, Any]:
+    """多份源码包的汇总 mock：按各份得分加权，取平均作为总体。"""
+    scores = [f.score for f in request.files if f.score is not None]
+    average = sum(scores) / len(scores) if scores else 0
+    degraded = sum(1 for f in request.files if f.degraded)
+    return {
+        "design_score": clamp_score(average),
+        "design_comment": f"共 {len(request.files)} 份源码包，整体设计水平接近各份平均",
+        "doc_score": clamp_score(max(0, average - 4)),
+        "doc_comment": "整体注释覆盖一般，跨包说明偏少",
+        "suggestions": [
+            "为多包工程补充统一的 README 与模块划分说明",
+            "把重复的工具类抽到公共模块，避免每个包各写一份",
+        ],
+        "summary": (
+            f"本次提交共 {len(request.files)} 份源码包，"
+            f"平均分 {average:.1f}，其中 {degraded} 份评审未完整完成。"
+        ),
+    }
+
+
+def mock_report_aggregate(request) -> dict[str, Any]:
+    """多份报告的汇总 mock：各维度取平均。"""
+    scores = [f.score for f in request.files if f.score is not None]
+    average = sum(scores) / len(scores) if scores else 0
+    degraded = sum(1 for f in request.files if f.degraded)
+    # 必须与 ReportEvaluationDraft.dimensions 的字段完全对齐：
+    # DimensionScore 要求 key / name / weight / score 齐全，只给 key+score 会在
+    # pydantic 校验阶段直接 500（2026-11 实测踩过），所以 name 与 weight 从
+    # REPORT_DIMENSION_SPECS 取，和单份评审的 mock 保持同一份定义。
+    spec = {item.key: item for item in REPORT_DIMENSION_SPECS}
+    raw = [
+        ("STRUCTURE", 2, "多份材料合并后章节基本完整"),
+        ("REQUIREMENT", 0, "需求描述与题目基本对应"),
+        ("DESIGN", 0, "设计章节有图示但深度一般"),
+        ("IMPLEMENTATION", -3, "实现说明偏少"),
+        ("TESTING", -5, "缺少系统化测试数据"),
+        ("FORMAT", 3, "排版规范"),
+    ]
+    dimensions = [
+        {
+            "key": key,
+            "name": spec[key].name,
+            "weight": spec[key].weight,
+            "score": clamp_score(average + delta),
+            "comment": comment,
+        }
+        for key, delta, comment in raw
+    ]
+    return {
+        "dimensions": dimensions,
+        # problems 是 list[ReportProblem]，不是字符串数组：
+        # 字符串会触发 Input should be a valid dictionary 校验错误。
+        "problems": [
+            {
+                "section": "整体",
+                "message": "多份报告之间内容有重复",
+                "suggestion": "合并重复章节，按设计/实现/测试重新分工",
+            }
+        ],
+        "highlights": ["多份材料覆盖了不同阶段的工作"],
+        "summary": (
+            f"本次提交共 {len(request.files)} 份报告，平均分 {average:.1f}，"
+            f"其中 {degraded} 份评审未完整完成。"
+        ),
     }

@@ -58,7 +58,7 @@ def test_internal_token_required() -> None:
 
 
 def test_generate_defense_questions() -> None:
-    """出题接口返回指定数量、camelCase 字段的题目。"""
+    """出题接口返回指定数量的计分题 + 1 道加分题，且每题带维度标签。"""
     payload = {
         "requestId": "req-1",
         "offering": {"courseName": "Java 课程设计", "semester": "2026-2027-1"},
@@ -70,9 +70,16 @@ def test_generate_defense_questions() -> None:
     response = client.post("/internal/ai/defense/questions", json=payload, headers=HEADERS)
     assert response.status_code == 200
     data = response.json()
-    assert len(data["questions"]) == 6
-    assert "expectedPoints" in data["questions"][0]
-    assert data["questions"][0]["maxAnswerSeconds"] >= 60
+    questions = data["questions"]
+    scored = [item for item in questions if not item.get("bonus")]
+    bonus = [item for item in questions if item.get("bonus")]
+    assert len(scored) == 6
+    assert len(bonus) == 1
+    assert bonus[0]["dimension"] == "IS_BONUS"
+    # 三个维度都要覆盖到，否则「两项不通过」的判定会失真
+    assert {item["dimension"] for item in scored} == {"P1_RETELL", "P2_REASON", "P3_MODIFY"}
+    assert "expectedPoints" in questions[0]
+    assert questions[0]["maxAnswerSeconds"] >= 60
     assert data["model"] == "mock"
 
 
@@ -100,6 +107,35 @@ def test_evaluate_defense() -> None:
     assert len(data["dimensions"]) == 4
     assert len(data["questionScores"]) == 2
     assert data["asr"]["averageConfidence"] > 0
+
+
+def test_bonus_question_is_excluded_from_total() -> None:
+    """加分题答得再好也不改变总分：只有非加分题参与维度汇总。"""
+    questions = [
+        {"id": "q1", "question": "说明分层", "expectedPoints": ["职责"], "dimension": "P1_RETELL"},
+        {"id": "q2", "question": "为什么改", "expectedPoints": ["理由"], "dimension": "P2_REASON"},
+        {
+            "id": "bonus",
+            "question": "迁移到离线场景",
+            "expectedPoints": ["取舍"],
+            "dimension": "IS_BONUS",
+            "bonus": True,
+        },
+    ]
+    transcript = [
+        {"questionId": "q1", "text": "业务放在 Service 层，控制器只做校验。" * 3, "durationMs": 30000},
+        {"questionId": "q2", "text": "我改了事务边界，因为原来的写法会重复提交。" * 3, "durationMs": 30000},
+    ]
+    base = {"defenseId": "d2", "questions": questions, "transcript": transcript, "audio": []}
+    plain = client.post("/internal/ai/defense/evaluate", json=base, headers=HEADERS).json()
+    with_bonus = client.post(
+        "/internal/ai/defense/evaluate",
+        json={**base, "transcript": transcript + [{"questionId": "bonus", "text": "我会加一条出站队列。" * 5, "durationMs": 20000}]},
+        headers=HEADERS,
+    ).json()
+    assert plain["score"] == with_bonus["score"]
+    bonus_row = next(item for item in with_bonus["questionScores"] if item["questionId"] == "bonus")
+    assert bonus_row["score"] > 0
 
 
 def test_evaluate_report() -> None:

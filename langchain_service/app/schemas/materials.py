@@ -66,3 +66,19 @@ class ReportMaterial(CamelModel):
     submission_id: str = ""
     sections: list[ReportSection] = Field(default_factory=list)
     page_count: int = 0
+
+
+class SubmissionFileBrief(CamelModel):
+    """提交物里的单个文件摘要。
+
+    一次提交可以有 1~9 个源码包 / 1~9 份报告。Java 侧把正文合并成一段送进来，
+    同时用这个结构告诉模型「这段文字由哪几份文件组成」，否则模型看到的是
+    一整块代码，无法判断「这是三个模块」还是「一个巨型文件」。
+    """
+
+    name: str = ""
+    size: int = 0
+    sha256: str = ""
+    java_files: int = 0
+    code_lines: int = 0
+    page_count: int | None = None

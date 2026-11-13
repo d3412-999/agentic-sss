@@ -8,7 +8,30 @@
 from pydantic import Field
 
 from app.schemas.common import CamelModel, DimensionScore
-from app.schemas.materials import ReportMaterial, TopicBrief
+from app.schemas.materials import ReportMaterial, SubmissionFileBrief, TopicBrief
+
+
+class FileReviewBrief(CamelModel):
+    """单个文件的评审摘要（汇总阶段的输入）。"""
+
+    name: str = ""
+    score: float | None = None
+    summary: str = ""
+    problems: list[str] = Field(default_factory=list)
+    highlights: list[str] = Field(default_factory=list)
+    page_count: int = 0
+    # 该份评审失败或被截断：汇总时要据此降低置信度，而不是当作合格
+    degraded: bool = False
+
+
+class ReportAggregateRequest(CamelModel):
+    """多份报告的汇总评审请求（map-reduce 的 reduce 阶段）。"""
+
+    submission_id: str = ""
+    selection_id: str = ""
+    topic_title: str = ""
+    requirements: str = ""
+    files: list[FileReviewBrief] = Field(default_factory=list)
 
 
 class ReportEvaluateRequest(CamelModel):
@@ -24,6 +47,8 @@ class ReportEvaluateRequest(CamelModel):
     report_text: str = ""
     # Java 侧解析出的 PDF 页数；DOCX 或解析失败时为 null
     page_count: int | None = None
+    # 多文件提交时的报告清单（1~9 份）。旧调用方不传，保持空列表即可。
+    report_files: list[SubmissionFileBrief] = Field(default_factory=list)
 
 
 class ReportProblem(CamelModel):

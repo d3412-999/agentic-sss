@@ -1,0 +1,120 @@
+# =============================================================================
+# 鍏ㄦ爤涓€閿惎鍔細MySQL + Redis + AI 鏈嶅姟 + 鍚庣 + 鍓嶇锛圢ginx锛?#
+#   docker compose -f docker-compose.full.yml up -d --build     # 鏋勫缓骞跺惎鍔?#   docker compose -f docker-compose.full.yml ps                # 鐪嬬姸鎬?#   docker compose -f docker-compose.full.yml logs -f backend   # 鐪嬫棩蹇?#   docker compose -f docker-compose.full.yml down              # 鍋滄锛堜繚鐣欐暟鎹級
+#   docker compose -f docker-compose.full.yml down -v           # 鍋滄骞舵竻搴?#
+# 璁块棶锛?#   鍓嶇        http://127.0.0.1:8088
+#   鍚庣 API    http://127.0.0.1:18081/api/v1/health
+#   Swagger     http://127.0.0.1:18081/swagger-ui.html
+#   AI 鍋ュ悍妫€鏌?http://127.0.0.1:18000/health
+#
+# 璇存槑锛?#   * MySQL/Redis 鍙湪鍐呯綉鏆撮湶锛堜笉鍗犲涓绘満 3306/6379锛夛紝鎵€浠ユ湰鏈哄凡鏈夌殑
+#     MySQL 鏈嶅姟涓庢湰鍦?Redis 涓嶄細琚奖鍝嶏紝鍙互鍚屾椂瀛樺湪銆?#   * 瀹夸富绔彛鐢?8088/18081/18000锛?080 甯歌 Intel 鐨?ApplicationWebServer 鍗犵敤锛?#     涔熼伩鍏嶅拰"鏈満寮€鍙戞ā寮?鐨?5173/8081/8000 鍐茬獊銆?#   * 婕旂ず鏁版嵁锛圴2 绉嶅瓙锛変笌琛ㄧ粨鏋勭敱鍚庣鍚姩鏃?Flyway 鑷姩鎵ц銆?# =============================================================================
+name: sss-full
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sss-full-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-123456}
+      MYSQL_DATABASE: ${DB_NAME:-sss}
+      MYSQL_USER: ${DB_USER:-sss}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-sss123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "${DB_USER:-sss}", "-p${DB_PASSWORD:-sss123456}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7.2
+    container_name: sss-full-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-123456}"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-123456}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  ai:
+    build:
+      context: ./langchain_service
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: sss-ai:latest
+    container_name: sss-full-ai
+    restart: unless-stopped
+    environment:
+      AI_INTERNAL_TOKEN: ${AI_INTERNAL_TOKEN:-change-me}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LIGHTRAG_ENABLED: "false"
+      TEMPLATE_DB_PATH: /app/data/template_library.db
+      TZ: Asia/Shanghai
+    ports:
+      - "18000:8000"
+    volumes:
+      - ai-data:/app/data
+
+  backend:
+    build:
+      context: ./backend
+    image: sss-backend:latest
+    container_name: sss-full-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai:
+        condition: service_started
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME:-sss}
+      DB_USER: ${DB_USER:-sss}
+      DB_PASSWORD: ${DB_PASSWORD:-sss123456}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-123456}
+      AI_BASE_URL: http://ai:8000
+      AI_INTERNAL_TOKEN: ${AI_INTERNAL_TOKEN:-change-me}
+      JWT_SECRET: ${JWT_SECRET:-change-me-change-me-change-me-change-me}
+      STORAGE_DIR: /data/objects
+      SERVER_PORT: "8081"
+      TZ: Asia/Shanghai
+    ports:
+      - "18081:8081"
+    volumes:
+      - object-data:/data/objects
+
+  web:
+    build:
+      context: ./vue
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    image: sss-web:latest
+    container_name: sss-full-web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8088:80"
+
+volumes:
+  mysql-data:
+  redis-data:
+  object-data:
+  ai-data:

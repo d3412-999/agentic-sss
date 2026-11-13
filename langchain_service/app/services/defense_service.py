@@ -77,7 +77,15 @@ class DefenseService:
             user_prompt=user_prompt,
             mock_factory=lambda: mock_defense_questions(request),
         )
-        questions = list(result.data.questions)[:count]
+        # 计分题与加分题分开截断：直接 [:count] 会把排在最后的加分题切掉，
+        # 也会让「多出的题」冒充加分题，污染总分口径。
+        scored = [
+            item for item in result.data.questions if not item.bonus and item.dimension != "IS_BONUS"
+        ][:count]
+        bonus = [
+            item for item in result.data.questions if item.bonus or item.dimension == "IS_BONUS"
+        ][: max(0, request.config.bonus_count)]
+        questions = scored + bonus
         if not questions:
             raise LlmResponseFormatError("大模型没有生成任何答辩题目")
 
@@ -119,6 +127,10 @@ class DefenseService:
                     question_id=question.id,
                     score=clamp_score(item.score) if item else 0.0,
                     comment=item.comment if item else "未给出评分",
+                    # 维度与加分标记以后端下发的题目为准，不采信模型改写
+                    dimension=question.dimension,
+                    evidence=(item.evidence if item and item.evidence else ""),
+                    passed=item.passed if item else None,
                 )
             )
 
@@ -142,9 +154,13 @@ class DefenseService:
 
     @staticmethod
     def _normalize_question(question: DefenseQuestion) -> DefenseQuestion:
-        """限制题目类型、难度与作答时限。"""
+        """限制题目类型、难度、维度与作答时限。"""
         allowed_types = {"DESIGN", "CODE", "REPORT", "CONCEPT", "EXTENSION"}
         allowed_difficulties = {"EASY", "MEDIUM", "HARD"}
+        allowed_dimensions = {"P1_RETELL", "P2_REASON", "P3_MODIFY", "IS_BONUS"}
+        dimension = question.dimension if question.dimension in allowed_dimensions else None
+        if question.bonus and dimension is None:
+            dimension = "IS_BONUS"
         return question.model_copy(
             update={
                 "type": question.type if question.type in allowed_types else "DESIGN",
@@ -154,6 +170,7 @@ class DefenseService:
                     else "MEDIUM"
                 ),
                 "max_answer_seconds": max(60, min(question.max_answer_seconds, 600)),
+                "dimension": dimension,
             }
         )
 
