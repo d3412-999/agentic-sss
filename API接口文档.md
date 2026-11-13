@@ -107,7 +107,7 @@ erDiagram
 ### 1.5 关键假设与约束
 
 1. **开课（offering）** = 某学期某门课的一个教学班，是绝大多数接口的作用域。
-2. 一个学生可同时选择**多道题目**；**每道题独立**提交源码与报告、独立进行源码/报告评分；**答辩按学生组织一次**，题目覆盖其全部所选题目（也可按题分场，见 11.1 参数 `defenseMode`）。
+2. 一个学生可同时选择**多道题目**（不设上限）；**每道题独立**提交源码与报告、独立进行源码/报告评分；**答辩按学生组织一次**（固定 AI 异步答辩），题目覆盖其全部所选题目。
 3. 源码为 `.zip`（≤ 100 MB，解压后 ≤ 500 MB、≤ 3000 个文件）；报告为 `.pdf` / `.docx`（≤ 50 MB）。
 4. 答辩为**实时语音**：浏览器采集 → WebSocket 上行音频帧 → 服务端 ASR 流式转写；断线可重连续答；同时保留 HTTP 分片上传作为兜底。
 5. 自动评分**幂等**，可重跑；教师可覆盖，覆盖后进入 `LOCKED` 状态。
@@ -442,15 +442,11 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 
 ```json
 {
-  "courseId": "1839000000000000001",
   "semester": "2026-2027-1",
   "className": "计科2301",
   "description": "本学期课程设计，要求 2~3 人组队或独立完成",
-  "topicSelectLimit": 3,
   "weights": { "defense": 40, "code": 35, "report": 25 },
   "defenseConfig": {
-    "defenseMode": "PER_STUDENT",
-    "questionCount": 6,
     "maxAnswerSeconds": 180,
     "allowRetry": false,
     "language": "zh-CN",
@@ -473,8 +469,8 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 | className | string | 是 | ≤ 50 字 |
 | topicSelectLimit | int | 否 | 1~10，默认 3 |
 | weights | object | 否 | 三项整数，和 = 100 |
-| defenseConfig.defenseMode | string | 否 | `PER_STUDENT`（默认，一人一场）/ `PER_TOPIC`（一题一场） |
-| defenseConfig.questionCount | int | 否 | 3~12，默认 6 |
+| defenseConfig.defenseMode | string | 否 | **已移除**：固定走 AI 异步答辩，传值会被忽略 |
+| defenseConfig.questionCount | int | 否 | **已废弃**：不再作为教学班配置项，传值会被忽略；答辩题数在发起答辩时指定，未指定用服务端默认值 |
 | defenseConfig.maxAnswerSeconds | int | 否 | 60~600，默认 180 |
 | defenseConfig.enableVideo | bool | 否 | 是否同时录制视频（默认仅音频） |
 
@@ -559,84 +555,119 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 
 ## 5. 学生名单 `/teacher/offerings/{offeringId}/students`
 
+导入是**两段式**：先 `parse-*` 拿到逐行预览（只读、不写库），教师确认后 `confirm` 真正入库。
+行级问题（重复学号、已在本班、姓名为空）不会让整批失败——预览里逐行标注，确认后逐行返回结果。
+
+### 5.0 导入限额（前端提示与后端校验共用同一份）
+
+`GET /meta/student-import-policy` ｜ 无需登录
+
+```json
+{ "allowedExtensions": ["xlsx","xls","docx","csv"], "maxFileBytes": 2097152, "maxRows": 500 }
+```
+
+`GET /teacher/offerings/{offeringId}/students/import/policy` 返回同一份值（带归属校验）。
+
 ### 5.1 下载导入模板
 
 `GET /teacher/offerings/{offeringId}/students/import/template` ｜ 权限：TEACHER（本人）
 
-返回 `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`，列：`学号*`、`姓名*`、`班级`、`邮箱`。首行为表头，第二行为示例（导入时忽略示例行）。
+返回 xlsx 二进制（`学生名单导入样例.xlsx`）。表头固定 `学号 / 姓名 / 邮箱`（邮箱可空），
+学号列预设为文本格式，避免 Excel 把 2023010104 显示成科学计数法。
 
-### 5.2 导入学生名单
+### 5.2 解析：文本粘贴
 
-`POST /teacher/offerings/{offeringId}/students/import` ｜ 权限：TEACHER（本人）
+`POST /teacher/offerings/{offeringId}/students/import/parse-text` ｜ 权限：TEACHER（本人）
 
-`multipart/form-data`
+```json
+{ "text": "2023010104 赵六\n2023010105 钱七" }
+```
+
+分隔符自动识别：制表符 → 英文/中文逗号 → 空白（含全角空格）→ `学号-姓名`；
+首行若是「学号 姓名」表头会自动跳过（`headerDetected=true`）。
+
+### 5.3 解析：文件上传
+
+`POST /teacher/offerings/{offeringId}/students/import/parse-file` ｜ `multipart/form-data`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| file | file | 是 | `.xlsx`，≤ 5 MB，≤ 2000 行 |
-| duplicateStrategy | string | 否 | `SKIP`（默认）/ `UPDATE` |
-| initialPasswordRule | string | 否 | `LAST6`（学号后 6 位，默认）/ `RANDOM` |
+| file | file | 是 | `.xlsx` / `.xls` / `.docx` / `.csv`，≤ 2 MB，≤ 500 行；`.doc` 会提示另存为 |
 
-同步返回（数据量小，无需异步）：
+xlsx/xls 读第一个 sheet 的前三列；docx 优先取第一个多列表格，没有表格时按段落文本解析；
+csv 先按 UTF-8 严格解码，失败回退 GBK。
 
-```json
-{
-  "total": 42,
-  "created": 40,
-  "updated": 0,
-  "skipped": 1,
-  "failed": 1,
-  "errors": [
-    { "row": 17, "studentNo": "2023010117", "message": "学号已存在于其他教学班" }
-  ],
-  "initialPasswordHint": "初始密码为学号后 6 位，学生首次登录须改密"
-}
-```
-
-> 重复学号在**同一开课**内幂等；已在其他开课存在的账号直接复用，仅建立名单关系。
-
-### 5.3 学生列表
-
-`GET /teacher/offerings/{offeringId}/students?keyword=张&status=ACTIVE&page=1&size=20` ｜ 权限：TEACHER（本人）
+### 5.4 预览结构（`PreviewVO`）
 
 ```json
 {
-  "list": [
-    {
-      "studentId": "1839201930123456789",
-      "studentNo": "2023010101",
-      "name": "张三",
-      "className": "计科2301",
-      "email": "zhangsan@example.edu.cn",
-      "status": "ACTIVE",
-      "selectionCount": 2,
-      "submitted": true,
-      "defenseStatus": "FINISHED",
-      "finalScore": 87.5,
-      "lastLoginAt": "2026-10-21T20:11:00+08:00"
-    }
+  "rows": [
+    { "rowNo": 2, "studentNo": "2023010101", "name": "张三", "email": "", "state": "IN_ROSTER", "message": "已在本班，将跳过" },
+    { "rowNo": 3, "studentNo": "2023010104", "name": "赵六", "email": "", "state": "NEW", "message": "将创建账号并加入本班" },
+    { "rowNo": 4, "studentNo": "2023010104", "name": "赵六", "email": "", "state": "INVALID", "message": "与第 3 行学号重复" }
   ],
-  "total": 42, "page": 1, "size": 20, "pages": 3
+  "total": 3, "importable": 1, "skipped": 1, "invalid": 1,
+  "headerDetected": false, "hint": null, "source": "TEXT"
 }
 ```
 
-### 5.4 单个添加学生
+| state | 含义 | 是否会被提交 |
+|---|---|---|
+| `NEW` | 系统里没有这个学号，将建号并入班 | 是 |
+| `LINK` | 账号已存在（学生角色），只建名单关系；姓名以系统内为准 | 是 |
+| `IN_ROSTER` | 已在本班，跳过 | 否 |
+| `INVALID` | 该行不合法（学号格式/姓名空/批内重号/被教师账号占用） | 否 |
 
-`POST /teacher/offerings/{offeringId}/students` ｜ 权限：TEACHER（本人）
+> 行级问题走 HTTP 200 + 逐行 `state`，**不是 4xx**：一次导入 200 行里有个别脏数据，
+> 直接整批 400 会让老师没法继续。前端表格逐行展示状态与原因，并支持「只看异常 / 下载错误清单」。
+
+### 5.5 确认导入
+
+`POST /teacher/offerings/{offeringId}/students/import/confirm` ｜ 权限：TEACHER（本人）｜ 幂等：`Idempotency-Key`
 
 ```json
-{ "studentNo": "2023010101", "name": "张三", "className": "计科2301", "email": "zhangsan@example.edu.cn" }
+{ "rows": [ { "studentNo": "2023010104", "name": "赵六", "email": "zhaoliu@sss.local", "rowNo": 3 } ] }
 ```
-
-响应返回学生对象与 `initialPassword`（仅在首次创建账号时返回一次，请教师留存）。
-
-### 5.5 重置密码
-
-`POST /teacher/offerings/{offeringId}/students/{studentId}/reset-password` ｜ 权限：TEACHER（本人）
 
 ```json
-{ "initialPassword": "483920", "mustChangePassword": true }
+{
+  "total": 2, "created": 1, "linked": 1, "skipped": 0, "failed": 0,
+  "rows": [
+    { "rowNo": 3, "studentNo": "2023010104", "name": "赵六", "result": "CREATED", "message": "已创建账号并加入本班" },
+    { "rowNo": 6, "studentNo": "2023010105", "name": "钱七", "result": "LINKED",  "message": "已加入本班（保留系统姓名：钱七）" }
+  ]
+}
 ```
+
+`result`：`CREATED` / `LINKED` / `SKIPPED` / `FAILED`。
+
+**事务策略**：按 `import-chunk-size`（默认 200）分批提交，每批一个短事务；
+某批抛异常时自动退回**逐行事务**，把失败精确到行，不让同批其他行陪葬。
+同一 `Idempotency-Key` 重复提交返回 `40902`；换 key 再提交同一批只会全部 `SKIPPED`（不产生重复账号或重复关联）。
+
+**初始密码**：默认 `密码 = 学号`（`sss.student.default-password-mode=STUDENT_NO`），
+一律置 `must_change_password=1`，首次登录强制改密；接口**不返回**密码。
+改成 `FIXED` 时所有新账号使用 `sss.student.default-password`。
+
+### 5.5.1 批量移除
+
+`POST /teacher/offerings/{offeringId}/students/batch-remove` ｜ 权限：TEACHER（本人）
+
+```json
+{ "studentIds": ["1839201930123456789", "1839201930123456790"] }
+```
+
+```json
+{ "total": 2, "removed": 1, "failed": 1,
+  "rows": [ { "studentId": "…789", "name": "张三", "success": true,  "message": "已移出本班" },
+            { "studentId": "…790", "name": "李四", "success": false, "message": "该生已有提交物或成绩，不能从名单移除" } ] }
+```
+
+### 5.5.2 名单导出
+
+`GET /teacher/offerings/{offeringId}/students/export` → CSV（学号 / 姓名 / 班级 / 状态 / 选题数 / 最近登录，带 BOM 防 Excel 乱码）。
+
+### 5.6 学生列表
 
 ### 5.6 启用 / 禁用
 
@@ -659,11 +690,12 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 
 ## 6. 题目 `/topics`
 
-题目属于某个开课，教师创建后可「暂存」或「发布」，只有已发布题目对学生可见、可选。
+题目属于某个开课。**V9 起题目没有草稿/发布/归档状态**：创建即对学生可见、可选。
+题目只有四个业务字段：标题、描述、难度、附件；交付要求、标签、期望技术栈、容量上限均已下线。
 
 ### 6.1 题目列表（教师）
 
-`GET /teacher/offerings/{offeringId}/topics?status=PUBLISHED&keyword=&page=1&size=20` ｜ 权限：TEACHER（本人）
+`GET /teacher/offerings/{offeringId}/topics?difficulty=&keyword=&page=1&size=20` ｜ 权限：TEACHER（本人）
 
 ```json
 {
@@ -672,18 +704,18 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
       "id": "1839300000000000001",
       "title": "基于 JavaFX 的图书管理系统",
       "difficulty": "MEDIUM",
-      "status": "PUBLISHED",
-      "maxSelectCount": 5,
+      "difficultyLabel": "进阶",
       "selectedCount": 4,
-      "tags": ["JavaFX", "JDBC", "设计模式"],
       "attachmentCount": 2,
-      "publishedAt": "2026-09-05T10:00:00+08:00",
+      "createdAt": "2026-09-05T10:00:00+08:00",
       "updatedAt": "2026-09-18T15:20:00+08:00"
     }
   ],
   "total": 8, "page": 1, "size": 20, "pages": 1
 }
 ```
+
+`difficulty` 过滤接受编码（`EASY`/`MEDIUM`/`HARD`）或中文展示名；无法识别的值视为「不筛选」，不会报错。
 
 ### 6.2 新建题目
 
@@ -693,74 +725,82 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 {
   "title": "基于 JavaFX 的图书管理系统",
   "description": "设计并实现一个图书管理系统，支持借还、查询、统计。",
-  "requirements": "1. 使用 Java 17；\n2. 界面使用 JavaFX；\n3. 数据持久化使用 JDBC + MySQL；\n4. 至少运用 3 种设计模式。",
   "difficulty": "MEDIUM",
-  "maxSelectCount": 5,
-  "tags": ["JavaFX", "JDBC", "设计模式"],
-  "attachments": ["f_9a1c2b...", "f_9a1c2c..."],
-  "expectedTech": ["JavaFX", "JDBC", "MySQL"],
-  "status": "DRAFT"
+  "attachments": ["2120897397787512834", "2120897397871398913"]
 }
 ```
 
 | 字段 | 类型 | 必填 | 约束 |
 |---|---|---|---|
 | title | string | 是 | 2~100 字，同一开课内唯一 |
-| description | string | 是 | Markdown，≤ 5000 字 |
-| requirements | string | 否 | Markdown，评分与答辩题生成的重要依据 |
-| difficulty | string | 否 | `EASY` / `MEDIUM` / `HARD`，默认 `MEDIUM` |
-| maxSelectCount | int | 否 | 1~200，默认等于开课剩余容量 |
-| tags | string[] | 否 | ≤ 10 个 |
-| attachments | string[] | 否 | `fileId` 列表，≤ 10 个 |
-| status | string | 否 | `DRAFT`（默认）/ `PUBLISHED` |
+| description | string | 是 | ≤ 5000 字 |
+| difficulty | string | 否 | `EASY` / `MEDIUM` / `HARD`，缺省 `MEDIUM`；非法值 `40001` |
+| attachments | string[] | 否 | 已上传成功的 `fileId` 列表，单题 ≤ `maxPerTopic`（默认 20） |
+
+`attachments` 里的文件必须满足：存在、`bucket = TOPIC_ATTACHMENT`、`created_by = 当前教师`，否则 `42201` / `40301`。
 
 ### 6.3 题目详情
 
 `GET /topics/{topicId}` ｜ 权限：TEACHER（本人）或已选该题的学生
 
-返回 6.2 全部字段 + `selectedCount`、`createdAt`、`updatedAt`、`attachments[].downloadUrl`。
+返回 6.2 全部字段 + `selectedCount`、`attachmentCount`、`version`、`createdAt`、`updatedAt`、`attachments[]`（含 `downloadUrl`、`contentType`、`size`）。
 
 ### 6.4 修改题目
 
 `PUT /topics/{topicId}` ｜ 权限：TEACHER（本人）
 
-- 已被学生选择的题目，**不允许**修改 `maxSelectCount`（低于已选人数时）、`title`；其余可改，修改留痕（`audit_log`）。
-- 请求体携带 `version`。
+- 请求体：`version`（必填）、`title`、`description`、`difficulty`，三者均可选。
+- 已被学生选择的题目**不允许**改 `title`（`40901`），其余可改；修改留痕（`audit_log`）。
 
 ### 6.5 删除题目
 
 `DELETE /topics/{topicId}` ｜ 权限：TEACHER（本人）
 
-- 已有学生选择 → `42201`，提示先联系学生退选或改为 `ARCHIVED`。
-- 提供 `POST /topics/{topicId}/archive` 做逻辑下架（学生端不再展示，已选记录保留）。
+已有学生选择 → `42201`「已有学生选择该题，请先联系学生退选」。删除同时解绑附件引用，文件本体保留以便秒传复用。
 
-### 6.6 发布题目
+### 6.6 附件管理（编辑态）
 
-单条：`POST /topics/{topicId}/publish`
-批量：`POST /teacher/offerings/{offeringId}/topics/publish`
+| 操作 | 方法与路径 | 说明 |
+|---|---|---|
+| 追加 | `POST /topics/{topicId}/attachments` | 请求体 `{ "fileIds": ["..."] }`，返回最新附件列表；重复 fileId 自动忽略 |
+| 删除 | `DELETE /topics/{topicId}/attachments/{fileId}` | 解绑；该文件不再被任何题目引用时连同磁盘文件清理 |
+| 排序 | `PUT /topics/{topicId}/attachments/order` | 请求体 `{ "fileIds": [...] }`，顺序即新的 `sort_no`，集合必须与当前一致 |
 
-```json
-{ "topicIds": ["1839300000000000001", "1839300000000000002"] }
-```
+### 6.7 文件上传 `/files`
 
-返回 `{ "published": 2, "failed": [] }`。发布前校验：描述非空、`maxSelectCount ≥ 1`。
-
-### 6.7 批量导入题目
-
-`POST /teacher/offerings/{offeringId}/topics/import` ｜ 权限：TEACHER（本人）
-
-`multipart/form-data`：`file`（`.xlsx`，≤ 5 MB）
-
-列：`题目名称*`、`题目描述*`、`要求`、`难度`、`人数上限`、`标签（逗号分隔）`。
+`POST /files/batch` ｜ `multipart/form-data`，字段名 `files`（可重复）｜ 权限：TEACHER
 
 ```json
-{ "total": 6, "created": 5, "failed": 1, "errors": [{ "row": 4, "message": "题目名称重复" }] }
+{
+  "succeeded": [
+    { "fileId": "2120897397787512834", "filename": "题目说明.pdf", "size": 69215,
+      "sha256": "cfa318…", "contentType": "application/pdf" }
+  ],
+  "failed": [
+    { "filename": "fake.pdf", "reason": "「fake.pdf」内容与扩展名不符，已拒绝（请勿修改文件后缀）" }
+  ]
+}
 ```
 
-### 6.8 题目附件
+- 数量/总量超限 → `40001`（写盘前拦截，不产生半成品文件）；单文件格式/大小问题 → 逐条 `failed`，其余文件照常成功。
+- 三重校验：扩展名白名单 → 文件头魔数（PDF `%PDF`、DOC OLE2、DOCX 需含 `word/` 条目）→ MIME。
+- 限额来自 `sss.upload.topic-attachment.*`，前端可用 `GET /meta/upload-policy` 读取同一份配置。
+- 兼容入口：`POST /files`（单文件，字段 `file`）。
 
-- 上传：`POST /topics/{topicId}/attachments`（`multipart/form-data`，`file` ≤ 20 MB）→ `{ "fileId": "f_9a1c2b..." }`
-- 删除：`DELETE /topics/{topicId}/attachments/{fileId}`
+`GET /files/{fileId}/download?inline=true` ｜ 权限：上传者 / 教师 / 题目附件所属开课名单内学生
+
+- `inline=true` 且类型为 PDF 时返回 `Content-Disposition: inline`，供前端内嵌预览；其它类型强制 `attachment`。
+- 固定返回 `X-Content-Type-Options: nosniff`。
+
+### 6.8 字典
+
+`GET /meta/difficulties` → `[{ "code": "EASY", "label": "入门", "sort": 10 }, …]`
+`GET /meta/upload-policy` → `{ "allowedExtensions": ["pdf","doc","docx"], "maxFileBytes": 20971520, "maxFilesPerRequest": 5, "maxTotalBytes": 52428800, "maxPerTopic": 20 }`
+
+> 这两个字典接口**无需登录**（`/api/v1/meta/**` 已放行）：内容是静态常量，不含用户数据；
+> 放行后即使 token 过期，难度筛选条也能拿到字典，不会静默回退到前端兜底值。
+
+> 已移除：`POST /topics/{id}/publish`、`POST /topics/{id}/archive`、`POST /teacher/offerings/{id}/topics/publish`、`POST /teacher/offerings/{id}/topics/import`。
 
 ---
 
@@ -808,10 +848,9 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
       "title": "基于 JavaFX 的图书管理系统",
       "summary": "设计并实现一个图书管理系统……",
       "difficulty": "MEDIUM",
-      "tags": ["JavaFX", "JDBC"],
-      "maxSelectCount": 5,
+      "difficultyLabel": "进阶",
       "selectedCount": 4,
-      "remaining": 1,
+      "attachmentCount": 2,
       "selectedByMe": false
     }
   ],
@@ -819,11 +858,13 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 }
 ```
 
+题目没有状态字段与容量字段：只要属于该开课就可见，`selectedCount` 只是「已选人数」参考值，不代表能否再选。
+
 ### 7.3 题目详情（学生）
 
 `GET /student/offerings/{offeringId}/topics/{topicId}` ｜ 权限：STUDENT（名单内）
 
-返回完整描述、要求、附件下载地址、`remaining`（剩余可选人数）。
+返回完整描述、难度、`selectedCount`、`selectedByMe`、`attachments[]`（PDF 可内嵌预览，Word 仅下载）。
 
 ### 7.4 选题（支持多选）
 
@@ -836,9 +877,9 @@ HTTP 状态码与 `code` 并用：成功统一 `200`（创建可为 `201`），�
 **业务规则**（违反任一返回 `42201`，`data.reason` 给出具体原因）：
 
 1. 开课处于 `PUBLISHED`，且在 `[selectStart, selectEnd]` 内；
-2. 题目已发布且属于该开课；
-3. 本次 + 已有选题数 ≤ `topicSelectLimit`；
-4. 题目未满（并发下用 Redis 预占 + DB 唯一索引兜底）；
+2. 题目属于该开课且未被删除（V9 起无「未发布」概念）；
+3. 本次 + 已有选题数 ≤ `topicSelectLimit`（`null` = 不限）；
+4. 原子计数：并发下用单条 UPDATE 递增，题目已删除时返回 `42201 TOPIC_UNAVAILABLE`；
 5. 不可重复选择同一题目（`40902`）。
 
 **响应**

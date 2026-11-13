@@ -35,6 +35,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 - [目录结构](#目录结构)
 - [快速开始](#快速开始)
 - [配置](#配置)
+- [本地状态持久化](#本地状态持久化)
 - [API](#api)
 - [用 IDEA 运行](#用-idea-运行)
 - [开发约定](#开发约定)
@@ -69,6 +70,7 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 | 通知与任务 | 站内通知、跨页面任务中心（进度轮询、取消、结果查看） | ✅ |
 | 前端工作台 | 12 个页面、深色主题、命令面板（Ctrl K）、响应式布局、骨架屏与空态 | ✅ |
 | 语音答辩 | 教师发起答辩（AI 出题）→ 学生逐题录音 → ASR 转写 → AI 评分 → 成绩；摄像头「在场检测」（只判画面里有没有人） + **整场答辩录像（画面+声音）留存、教师回放/下载** | ✅ 主链路已实现（实时流式代理、人脸身份识别为下一阶段） |
+| 答辩监考 | 答辩中**只读查看本人源码**（服务端解压、只回纯文本、无下载入口）；切屏 / 开发者工具 / 粘贴等**弱信号上报**，累计达阈值暂停答辩，由教师恢复或确认终止 | ✅ 已实现（前端检测只是提高作弊成本，不是判据） |
 | 静态分析 | Checkstyle / PMD / SpotBugs 调度与问题明细落库 | 🚧 未实现 |
 
 ## 界面
@@ -111,10 +113,10 @@ Spring Boot 3 后端（59 个 REST 接口、22 张表、JWT 鉴权）+ Vue 3 工
 ## 架构
 
 ```
-浏览器 (Vue 3 :5173)
+浏览器 (Vue 3 :3002)
    │  REST + Bearer JWT   { code, message, data, traceId }
    ▼
-Spring Boot :8081  ── Controller → Service → Mapper
+Spring Boot :8084  ── Controller → Service → Mapper
    │        │              │
    │JDBC    │Redis         │HTTP + X-Internal-Token
    ▼        ▼              ▼
@@ -196,7 +198,30 @@ mysql -h 127.0.0.1 -u root -p < scripts/init-local-db.sql   # 建 sss 库与应�
 powershell -ExecutionPolicy Bypass -File scripts\start-redis.ps1
 ```
 
-### 3. 启动后端（:8081）
+### 3. 一键启动前后端（推荐）
+
+```cmd
+dev.cmd up
+```
+
+一条命令完成：读配置 → 检测端口占用 → 清理本项目残留进程 → 启动后端 → 等健康检查 → 启动前端 → 验证 `/api` 代理链路。
+
+| 命令 | 作用 |
+|---|---|
+| `dev.cmd up` | 启动（端口被占会自动清理；已在运行则直接提示，不重复启动） |
+| `dev.cmd down` | 停止（按监听者精确结束，端口一定释放） |
+| `dev.cmd restart` | 先停再起 |
+| `dev.cmd status` | 查看端口、PID、健康检查、日志路径 |
+| `dev.cmd logs` | 打开日志目录 |
+
+可选参数：`-Force`（端口被无法确认归属的进程占用时强制清理）、`-BackendOnly`、`-FrontendOnly`。
+
+端口**不在脚本里硬编码**：后端读 `application.yaml` 的 `${SERVER_PORT:默认值}`，前端读 `vue/.env` 的 `FRONTEND_PORT`。
+启动前脚本会校验 `VITE_API_TARGET` 与后端端口是否一致，不一致直接报错，不让错配跑到浏览器里。
+
+> 如果只想按端口查问题，`powershell -ExecutionPolicy Bypass -File scripts\port-doctor.ps1` 会输出「声明端口 / 实际监听 / 代理目标 / 端到端探测」四段事实。
+
+### 4. 手动启动后端（:8084）
 
 ```bash
 cd backend
@@ -207,11 +232,11 @@ cd backend
 
 | 地址 | 说明 |
 |---|---|
-| http://127.0.0.1:8081/api/v1/health | 健康检查（免鉴权） |
-| http://127.0.0.1:8081/swagger-ui.html | Swagger UI（Authorize 填 accessToken） |
-| http://127.0.0.1:8081/actuator/health | Actuator |
+| http://127.0.0.1:8084/api/v1/health | 健康检查（免鉴权） |
+| http://127.0.0.1:8084/swagger-ui.html | Swagger UI（Authorize 填 accessToken） |
+| http://127.0.0.1:8084/actuator/health | Actuator |
 
-### 4. 启动前端（:5173）
+### 5. 手动启动前端（端口见 `vue/.env` 的 `FRONTEND_PORT`）
 
 ```bash
 cd vue
@@ -220,7 +245,7 @@ npm install
 npm run dev
 ```
 
-### 5. 启动 AI 服务（:8000，可选）
+### 6. 启动 AI 服务（:8000，可选）
 
 ```bash
 cd langchain_service
@@ -248,7 +273,7 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 
 ### 6. 演示账号
 
-密码统一为 `123456`（由 `V2__seed_demo_data.sql` 写入，**仅用于本地演示**）。
+**seed 账号**（`V2__seed_demo_data.sql` 写入，仅用于本地演示）密码统一为 `123456`。
 
 | 账号 | 姓名 | 角色 |
 |---|---|---|
@@ -256,13 +281,18 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 | `T2019008` / `T2019009` | 李文博 / 周敏 | 教师 |
 | `admin` | 系统管理员 | 管理员 |
 
+**教师在教学班里新建/导入的学生**，初始密码默认就是**学号**本身
+（`sss.student.default-password-mode=STUDENT_NO`），首次登录强制改密；
+教师端「重置密码」也会重置回学号。想改回所有新账号统一密码，把该配置设为 `FIXED`
+并把 `sss.student.default-password` 设成你要的值。
+
 ## 配置
 
 所有配置项都带默认值，改一处需同步相关位置：
 
 | 配置 | 默认值 | 位置 |
 |---|---|---|
-| 后端端口 | `8081` | `application.yaml` `server.port` ↔ `vue/.env` `VITE_API_TARGET` |
+| 后端端口 | `8084` | `application.yaml` `server.port`（唯一真相源）↔ `vue/.env` `VITE_API_TARGET` |
 | 前端端口 | `5173` | Vite dev server ↔ `sss.cors.allowed-origins` |
 | AI 服务端口 | `8000` | `langchain_service/.env` `AI_PORT` ↔ `sss.ai.base-url` |
 | 数据库 | `sss` / `sss` / `sss123456` | `.env` ↔ `application.yaml` ↔ `docker-compose.yml` |
@@ -274,7 +304,134 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 
 完整环境变量清单见 `.env.example`。Spring Boot 不读取 `.env` 文件，它读取同名环境变量；不设置时使用 `application.yaml` 里的默认值。
 
-> 端口默认 8081 是因为 8080 常被其他本地服务占用。改为 8080 时请同时改 `vue/.env`。
+> 后端默认 8084（`application.yaml` 的 `${SERVER_PORT:8084}`），前端 dev server 默认 3002（`vue/.env` 的 `FRONTEND_PORT`）。改端口时两处一起改，`dev.cmd up` 会在启动前校验代理目标是否对得上。
+
+### 评审与答辩规则（V13 起可配）
+
+| 配置 | 默认值 | 作用 |
+|---|---|---|
+| `sss.ai.review.stale-minutes` | `15` | 评审任务超过该时长仍停在 PENDING/RUNNING 就由看门狗收敛为 FAILED |
+| `sss.ai.review.watchdog-interval-seconds` | `120` | 看门狗扫描间隔 |
+| `sss.defense.question-rule.base-count` / `max-count` | `6` / `10` | 基础题数 / 计分题上限（加分题不占上限） |
+| `sss.defense.question-rule.tiers` | T0~T4 | 源码分档 → 题数增量（`0-59→6`、`60-74→7`、`75-84→8`、`85-94→9`、`95-100→10`） |
+| `sss.defense.question-rule.base-mix` / `high-tier-mix` | `40,40,20` / `30,40,30` | 难度配比（T3 起换高分配比），最大余数法保证求和等于题数 |
+| `sss.defense.principle.threshold` | `60` | 维度平均分通过线 |
+| `sss.defense.principle.fail-count-for-ai-dependent` | `2` | 几项不通过判为「完全依赖 AI」 |
+| `sss.defense.batch.max-students` / `concurrency` | `50` / `2` | 单批人数上限 / 并发路数（钳制 1~3） |
+| `sss.defense.batch.allow-when-grade-published` | `false` | 成绩已发布后是否允许再发起答辩 |
+
+前端不硬编码这些值：进「答辩」页先调 `GET /teacher/defense/question-rule`，档位表、题数预览、阈值、批量上限都来自这一个接口，保证预览与落地结果一致。
+
+> **启动后端时注意**：若 shell 里存在 `SERVER__PORT` 之类的变量，Spring 宽松绑定会把它当成 `server.port` 覆盖掉 8084（表现为 `Port xxxxx was already in use`）。用 `env -u SERVER__PORT ./gradlew bootRun` 或显式 `--args='--server.port=8084'`。
+
+
+## 本地状态持久化
+
+刷新、关浏览器、两个标签页同时开——这些场景下「刚才传到哪了 / 刚才填到哪了」不该丢。
+前端所有本地状态收敛在 `vue/src/utils/storage.js` 一层，调用方只写 `get/set`。
+
+### 存储层做了什么
+
+每条记录是一个信封 `{v, t, e, h, d}`：`v` schema 版本、`t` 写入时间、`e` 过期时间、`h` 内容校验哈希、`d` 序列化后的数据。
+
+- **可校验**：版本不兼容、哈希对不上、已过期的数据在读取时直接丢弃并删除，不会把坏数据带进页面；
+- **可清理**：`list()` / `stats()` 给出条目、大小、模块，设置页有「本地缓存」面板可逐条删或一键清空；
+- **不串味**：key 强制为 `sss:{module}:{userId}:{context}`，换账号看不到上一个人的草稿；
+- **可降级**：隐私模式、`QuotaExceededError`、读不到 storage 时自动转内存态，业务代码不写 `if`，UI 会提示「当前浏览器无法保存本地数据（不影响本次上传）」；
+- **可换介质**：API 全是 `async`，默认驱动是 localStorage；将来换 IndexedDB 只需 `storage.useDriver()`，调用方不动。
+
+### 各类数据存在哪
+
+| 场景 | 模块 / 介质 | 保存时机 | 恢复校验 | TTL |
+|---|---|---|---|---|
+| 已上传成功的文件（有 `fileId`） | `upload` / localStorage | 上传成功、拖拽排序、移除后 200ms 内 | 逐条查 `GET /api/v1/files/{id}`，`exists=false` 就从列表剔除并提示 | 24h |
+| 上传队列（待传/失败/中断） | `upload` / sessionStorage | 同上（200ms 节流） | 只保留 `name+size+lastModified` 票据，刷新后标「需重新选择」，重选同名同大小文件自动接回队列 | 会话 |
+| 多标签页占用 | `upload` / localStorage | 有文件时每 5s 心跳 | 15s 不刷新即视为过期 | 15s |
+| 新建教学班表单 | `draft` / localStorage | 字段变化防抖 400ms | 打开弹窗时询问「恢复未完成的教学班？」 | 7d |
+| 新建/编辑题目 | `draft` / localStorage | 同上 | 按题目 id 分别保存，互不覆盖 | 7d |
+| 批量导入学生（含步骤与解析结果） | `steps` / localStorage | 同上 | 恢复后跳回预览步，并提示「名单可能已变化，建议重新解析」 | 7d |
+| 后台任务（重算/导出/复评） | `async` / localStorage | 状态每变一次 | 刷新后按 taskId 重新查询后端，不伪造进度 | 7d |
+
+介质选择的理由：能跨「关浏览器」才有意义的放 localStorage；只对当前标签页有意义的放 sessionStorage（刷新仍在、关页即清）。
+
+### 恢复的三个入口
+
+1. **路由守卫**（`persist/resume.js` + `router.afterEach`）：全局性的恢复——清理过期数据（5 分钟节流一次）、把没跑完的异步任务重新挂上轮询。放这里是为了「从任意页面进来都能续上」，不用每个页面都写一遍。
+2. **组件挂载**：需要组件内部状态的恢复（上传队列、表单草稿）必须由组件自己做，守卫里拿不到 ref；统一走 `useDraft` / `createUploadStore`。
+3. **多标签页**：`storage` 事件 + 心跳。后打开的标签页看到别人在操作就转只读并禁用上传区，持有者关页后 15s 内自动解除。
+
+### 清理入口
+
+设置页 →「本地缓存」：列出每条记录的模块、上下文、大小、更新时间，可单条删除 / 清理过期 / 全部清空。
+只清 `sss:{module}:{userId}:{context}` 规范下的数据，**不会**清除登录令牌（`sss.accessToken`）与主题偏好（`sss.theme`），所以清完不用重新登录。
+
+### 单元测试
+
+```bash
+cd vue && npm test        # node --test，30 个用例，零额外依赖
+```
+
+覆盖：正常读写、命名空间隔离、schema 版本升级丢弃、TTL 过期、哈希篡改丢弃、`QuotaExceeded` 降级、隐私模式、跨标签页 `storage` 事件、`cleanup`/`stats`、key 解析；
+以及上传快照的成功/中断拆分、`sessionStorage` 队列、脏数据过滤、提交后清理、占用声明的持有与释放。
+
+## 答辩只读源码与违规处置
+
+答辩题目会引用 `src/main/java/...`，学生需要在答题时对照自己的代码。这件事最容易做错的地方是「给个下载链接」——原始 zip 一旦离开服务端，可复制、可改、可转发。因此这里只提供**服务端解压后的纯文本**。
+
+### 源码接口的权限链
+
+`GET /api/v1/defense/sessions/{sessionId}/source-code` 每次请求都重跑完整链路，任一环失败即 403：
+
+1. 当前 token 角色必须是 `STUDENT`（教师看源码同样 403 —— 源码只对答辩者本人开放）；
+2. `defense_session.student_id == 当前用户`；
+3. 会话状态必须是 `IN_PROGRESS`（开始前拒绝，防提前抄；结束后立即失效，防事后导出）；
+4. 会话 → `selection` → `submission(SOURCE)` → 最新版本 → 版本内 `zip/jar` 清单；
+5. 扩展名白名单校验通过后才解压。
+
+返回 `{ files: [{ path, content, size, language, truncated }], totalFiles, totalSize, ... }`，**没有** `Content-Disposition`、没有下载 URL、不返回压缩包字节。
+
+### 解压的安全边界（`SourceArchiveReader`）
+
+- 流式读取，**不落盘**，不产生临时文件；
+- Zip Slip：绝对路径、Windows 盘符、任何 `..` 段 → 整个包拒绝；
+- 可执行文件（`.exe/.dll/.sh/.cmd` 等）与上传闸门同口径再拦一次；
+- 只收文本后缀（java/xml/js/ts/py/c/cpp/go/rs/vue/html/css/json/yaml/md/txt/properties…），二进制与 `node_modules/`、`.git/` 跳过并计数；
+- 单文件超限**截断并置 `truncated=true`**，前端显式提示，不假装完整；
+- 条目数 / 单文件字节 / 解压总字节 / 总耗时四个上限任何一个触顶就中断（默认 500 文件 / 5MB / 200MB / 60s，见 `sss.defense.source`）。
+
+### 缓存、限流与审计
+
+- 解压结果按 `sessionId + versionId` 缓存 5 分钟（大结果不缓存），同一场答辩通常只解压一次；
+- 每个学生每分钟最多 2 次「冷解压」，命中缓存不计；
+- 首次访问绑定 IP，换网络再访问 403（可用 `sss.defense.source.bind-ip=false` 关闭）；
+- 每次请求（含缓存命中）都写 `audit_log`：`DEFENSE_SOURCE_VIEW`，含版本号、文件数、是否命中缓存。
+
+### 违规事件：前端只提供证据，教师才是裁决者
+
+| 类型 | 等级 | 是否计入阈值 |
+|---|---|---|
+| `TAB_SWITCH`（切标签页 / 窗口失焦） | MAJOR | 是 |
+| `DEVTOOLS`（开发者工具尺寸检测） | MAJOR | 是 |
+| `PASTE_PATTERN`（页面内大段粘贴） | MAJOR | 是 |
+| `COPY_BLOCK` / `SHORTCUT_BLOCK`（复制、保存、F12 被拦截） | MINOR | 否 |
+
+累计 2 次 MAJOR（`sss.defense.violation.threshold`）→ 会话置 `VIOLATED`（暂停键，不写分数）。之后由教师在「答辩工作台 → 答辩」的红色告警里二选一：
+
+- **判定误报，恢复答辩** → `VIOLATED → IN_PROGRESS`，写一条 `RESUME` 事件，**计数从这一刻重新开始**；
+- **确认违规，终止答辩** → `VIOLATED → COMPLETED`，成绩留空，随后可照常 AI 评分或改分（评分链路一行未改）。
+
+所有事件只追加不更新，教师端的处置也是一条事件，整条链路可回放。
+
+### 诚实边界
+
+- 浏览器沙箱决定了前端**无法**知道学生是否在别的标签页开着豆包/Copilot，**也无法**阻止他用手机查答案；
+- 尺寸检测只对「停靠式」开发者工具有效，分离窗口 / 内嵌模式检测不到；
+- 本场答辩是**语音作答**，页面里没有输入框，「粘贴检测」实际几乎不会触发——保留它是为了留下「在页面内粘贴」的痕迹，不是主要手段；
+- 因此这里的定位始终是「提高作弊成本 + 留下可复核证据」，不是「杜绝作弊」。拦截动作本身不算违规（记 MINOR），避免按一次 Ctrl+C 就被误杀。
+
+### 前端只读限制
+
+源码面板禁止右键菜单、`Ctrl/Cmd+C`、`Ctrl/Cmd+S`、`Ctrl/Cmd+U`、`F12`、`Ctrl+Shift+I/J/C`，代码区 `user-select: none`，无复制/导出/下载按钮；`highlight.js` 按语言**懒加载**（每个语言一个独立 chunk），答辩首屏不加载高亮器。
 
 ## API
 
@@ -288,7 +445,7 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 | StudentSelectionController | 5 | `/api/v1/student/*` |
 | SubmissionController | 9 | `/api/v1/student/selections/{id}/...`、`/api/v1/files/*` |
 | GradeController | 9 | `/api/v1/teacher/grades/*`、`/api/v1/student/grades/*` |
-| DefenseController | 12 | `/api/v1/teacher/defense/*`、`/api/v1/defense/sessions/*`（含录像 POST/GET）、`/api/v1/student/defense/*` |
+| DefenseController | 17 | `/api/v1/teacher/defense/*`、`/api/v1/defense/sessions/*`（含录像 POST/GET、`source-code`、`violation`、教师 `resume`/`uphold` 与违规汇总）、`/api/v1/student/defense/*` |
 | MiscController | 5 | `/api/v1/notifications/*`、`/api/v1/tasks/*` |
 | HealthController | 1 | `/api/v1/health` |
 
@@ -319,6 +476,7 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 ```bash
 cd backend && ./gradlew build                             # 构建后端（含 src/test 纯逻辑单测）
 cd vue && npm run build                                   # 构建前端
+cd vue && npm test                                        # 前端单测（存储层 + 上传快照，node --test）
 cd langchain_service && python -m pytest -q               # AI 服务测试（mock 模式）
 python backend/tools/gen_entities.py                      # 重新生成实体
 ```
@@ -330,7 +488,7 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 | Job | 命令 | 说明 |
 |---|---|---|
 | Backend | `./gradlew build --no-daemon` | JDK 17 + Gradle 缓存；执行 `src/test/java/.../common` 下的纯逻辑单测 |
-| Frontend | `npm ci && npm run build` | Node 20，锁定 `vue/package-lock.json` |
+| Frontend | `npm ci && npm run build && npm test` | Node 20，锁定 `vue/package-lock.json`；`npm test` 跑存储层与上传快照单测（30 例） |
 | AI service | `pip install -r requirements.txt` + `python -m pytest -q` | Python 3.12，mock provider 跑接口冒烟测试，之后再做一次导入检查 |
 
 - 后端单测集中在 `common` 包：压缩包安全校验（`ArchiveGuard`）、AI 分数校验（`ScoreGuard`）、
@@ -358,10 +516,18 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 | 登录返回 `50302 Redis 不可用` | Redis 没起：`docker compose up -d redis` 或 `scripts/start-redis.ps1`（脚本会按 `REDIS_HOME`/PATH/常见目录查找 redis-server.exe） |
 | 接口返回 `50303 数据库不可用` | MySQL 没起或端口不是 3306，确认后重启后端 |
 | 登录返回 `42901` | 同一用户名或同一 IP 1 分钟内失败过多（用户名 5 次、IP 20 次），等 1 分钟 |
-| 选题返回 `42201 TOPIC_FULL` | 题目名额已被别人抢完，刷新题目列表重选 |
+| 选题返回 `42201 TOPIC_UNAVAILABLE` | 题目已被删除，刷新题目列表重选（V9 起题目无容量上限，不再有「名额已满」） |
 | 上传后一直 `PARSING` | AI 服务未启动：`cd langchain_service && python main.py`，不启动会在降级后停在解析失败 |
 | `gradlew` 报 JDK 版本错误 | Gradle 9 要求 JDK 17+，`JAVA_HOME` 指向 JDK 17（例如 `D:\a\jdk\jdk17`） |
 | 前端 404 / 代理打空 | `vue/.env` 的 `VITE_API_TARGET` 与后端端口不一致，改完重启 `npm run dev` |
+| 刷新后上传列表还在，但文件显示「需重新选择」 | 正常行为：浏览器不允许页面读回本地文件。重选同名同大小文件会自动接回队列，已上传完成的不受影响 |
+| 浏览器提示「当前浏览器无法保存本地数据」 | 无痕/隐私模式下 storage 被禁用，已自动降级为内存态：本次上传照常，刷新后会丢进度 |
+| 提交页提示「另一标签页正在操作」 | 同一个提交在另一个标签页有未完成的上传，本页自动只读；关掉那个标签页或等 15s 心跳过期即恢复 |
+| 接口返回 `40401 接口不存在：POST /api/v1/...` | 页面上是新功能、后端进程还是旧构建（没重启）。`gradlew bootRun` 重启后端即可；`data.hint` 里也写了这条 |
+| 接口返回 `40501 接口不支持 GET 方法` | 路径对、方法错；`data.supportedMethods` 是允许的方法 |
+
+> 排障顺序建议：先看响应体里的 `message`，再看 `traceId`，然后用
+> `grep <traceId> 后端日志` 拿到完整堆栈——前端所有错误提示都会带 `traceId`（行内红字与 Toast 都有）。
 
 ## 已知限制
 
@@ -372,6 +538,9 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 - 报告正文已用 PDFBox（PDF）/ Apache POI（DOCX）抽取；扫描版 PDF 若没有文本层，仍会退回“无正文”，需要 OCR 才能评分。
 - AI 评审已做提示注入防护（不可信材料包装 + 操纵话术检测）与 0~100 分数区间校验，但检测是启发式的，不能保证穷尽新措辞；最终分数仍由教师复核发布。
 - 前端令牌存放在 sessionStorage（按标签页隔离、关闭即清除），同源 XSS 仍可读取；根治需要后端 HttpOnly Cookie。
+- 答辩源码查看只在 `IN_PROGRESS` 期间可用：答辩已结束（含你截图里那种 `COMPLETED`）时接口返回 403，前端也只显示「答辩期间可查看」的提示；这是有意设计，避免结束后把源码当资料导出。
+- 违规终止是**暂停键而不是判决**：`VIOLATED` 不写分数，必须教师点「恢复答辩」或「确认违规，终止」；前端上报的事件只是辅助证据，教师端通过 30s 轮询刷新（项目没有 WebSocket/SSE）。
+- 前端检测覆盖：切屏/失焦、停靠式开发者工具、页面内大段粘贴、复制与快捷键拦截。**无法检测**其他标签页里的 AI 工具、第二块屏幕、手机；也无法检测分离窗口的开发者工具。相关能力上限见上文「诚实边界」。
 - 默认口令与占位密钥未做启动期 fail-fast，部署到生产前必须手工替换（见 SECURITY.md）。
 - 演示数据与默认口令仅供本地使用。部署到生产前必须：删除或隔离 `V2__seed_demo_data.sql`、替换 `JWT_SECRET` 与 `AI_INTERNAL_TOKEN`、收紧 CORS 白名单、更换全部默认口令、限制 AI 服务网络访问（详见 [SECURITY.md](SECURITY.md)）。
 
