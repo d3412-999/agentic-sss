@@ -10,6 +10,13 @@ import lombok.Data;
 
 /**
  * 课程设计题目。
+ *
+ * <p>V9 之后题目只保留「标题 / 描述 / 难度 / 附件」四项业务字段：
+ * 交付要求、标签、期望技术栈、容量上限、草稿状态都已从模型与表结构中移除，
+ * 题目一经创建即对学生可见（不再有草稿/发布/归档状态机）。</p>
+ *
+ * <p>{@code selected_count} 仍然保留，但语义从「容量预占」变成单纯的「已选人数统计」，
+ * 不再参与任何上限判断。</p>
  */
 @Data
 @TableName("topic")
@@ -37,44 +44,14 @@ public class Topic {
     private String description;
 
     /**
-     * 具体要求（Markdown）
-     */
-    private String requirements;
-
-    /**
-     * 难度：EASY / MEDIUM / HARD
+     * 难度编码：EASY / MEDIUM / HARD（展示名见 Difficulty 枚举）
      */
     private String difficulty;
 
     /**
-     * 人数上限
-     */
-    private Integer maxSelectCount;
-
-    /**
-     * 已选人数（容量预占）
+     * 已选人数（仅统计，无上限）
      */
     private Integer selectedCount;
-
-    /**
-     * 标签数组
-     */
-    private String tags;
-
-    /**
-     * 期望技术栈数组
-     */
-    private String expectedTech;
-
-    /**
-     * 状态：DRAFT / PUBLISHED / ARCHIVED
-     */
-    private String status;
-
-    /**
-     * 发布时间
-     */
-    private LocalDateTime publishedAt;
 
     /**
      * 创建人

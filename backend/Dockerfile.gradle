@@ -1,0 +1,19 @@
+# ????????????????? Gradle??? CI / ????
+# ??????? services.gradle.org ? Gradle ??????? Dockerfile?????
+FROM eclipse-temurin:17-jdk AS build
+WORKDIR /app
+COPY gradlew ./
+COPY gradle ./gradle
+COPY settings.gradle build.gradle gradle.properties ./
+RUN chmod +x gradlew && ./gradlew --no-daemon dependencies > /dev/null 2>&1 || true
+COPY src ./src
+RUN ./gradlew --no-daemon bootJar -x test \
+ && cp "$(ls build/libs/*.jar | grep -v plain | head -n1)" /app/app.jar
+
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+ENV TZ=Asia/Shanghai JAVA_OPTS="-Xms256m -Xmx1024m"
+COPY --from=build /app/app.jar app.jar
+RUN mkdir -p /data/objects
+EXPOSE 8081
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]

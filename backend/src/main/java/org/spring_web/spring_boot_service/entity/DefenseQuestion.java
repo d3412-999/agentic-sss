@@ -37,6 +37,16 @@ public class DefenseQuestion {
     private String type;
 
     /**
+     * 判别维度：P1_RETELL（复述）/ P2_REASON（讲理由）/ P3_MODIFY（现场改）/ IS_BONUS；历史数据为 null
+     */
+    private String dimension;
+
+    /**
+     * 是否加分题：不参与总分，独立字段存结果
+     */
+    private Integer isBonus;
+
+    /**
      * 难度
      */
     private String difficulty;

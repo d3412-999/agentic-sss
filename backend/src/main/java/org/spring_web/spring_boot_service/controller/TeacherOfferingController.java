@@ -10,6 +10,8 @@ import org.spring_web.spring_boot_service.common.Result;
 import org.spring_web.spring_boot_service.dto.OfferingDtos;
 import org.spring_web.spring_boot_service.service.OfferingService;
 import org.spring_web.spring_boot_service.service.OfferingStudentService;
+import org.spring_web.spring_boot_service.service.SelectionService;
+import org.spring_web.spring_boot_service.service.SubmissionService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -33,6 +35,8 @@ public class TeacherOfferingController {
 
     private final OfferingService offeringService;
     private final OfferingStudentService studentService;
+    private final SelectionService selectionService;
+    private final SubmissionService submissionService;
 
     @Operation(summary = "课程模板列表")
     @GetMapping("/courses")
@@ -114,7 +118,7 @@ public class TeacherOfferingController {
         return Result.ok(studentService.list(offeringId, keyword, status, page, size));
     }
 
-    @Operation(summary = "添加学生，首次创建返回一次 initialPassword")
+    @Operation(summary = "单个添加学生（次要入口）：账号不存在则建号，已存在只建班级关联")
     @PostMapping("/offerings/{offeringId}/students")
     public Result<OfferingDtos.StudentVO> addStudent(
             @PathVariable String offeringId,
@@ -136,9 +140,43 @@ public class TeacherOfferingController {
         return Result.ok();
     }
 
+    @Operation(summary = "重置学生密码为统一的默认密码（前端不展示密码）")
     @PostMapping("/offerings/{offeringId}/students/{studentId}/reset-password")
-    public Result<OfferingDtos.ResetPasswordVO> resetPassword(
+    public Result<Void> resetPassword(
             @PathVariable String offeringId, @PathVariable String studentId) {
-        return Result.ok(studentService.resetPassword(offeringId, studentId));
+        studentService.resetPassword(offeringId, studentId);
+        return Result.ok();
+    }
+
+    /**
+     * 教师端：某个学生在本开课下的选题。
+     *
+     * <p>只读。「提交评审」要先拿到 selectionId 才能查提交物，而学生的选题列表接口
+     * 只返回当前登录人自己的。</p>
+     */
+    @Operation(summary = "教师查看某学生的选题（只读，供提交评审页定位）")
+    @GetMapping("/offerings/{offeringId}/students/{studentId}/selections")
+    public Result<java.util.List<org.spring_web.spring_boot_service.dto.SelectionDtos.SelectionVO>>
+            studentSelections(@PathVariable String offeringId, @PathVariable String studentId) {
+        return Result.ok(selectionService.teacherByStudent(offeringId, studentId));
+    }
+
+    /**
+     * 教师端：某个选题下的提交物列表（只读）。
+     *
+     * <p>为什么不能直接复用 {@code /api/v1/student/selections/{id}/submissions}：
+     * 那条路径在 SecurityConfig 里被限定为 ROLE_STUDENT，教师调用会在进入 Service
+     * 之前就被 403 拦掉（不是业务权限判断的问题，是路径级角色规则）。而
+     * 「提交评审」页需要先列出提交物、再逐个查详情，所以这里补一条教师侧的只读入口。</p>
+     *
+     * <p>权限：本方法本身在 /teacher 前缀下（已限 TEACHER），Service 里的
+     * list() 还会用 ownedOffering 再校验一次该开课是否属于当前教师，
+     * 因此不会出现「任意教师看任意学生材料」的越权。</p>
+     */
+    @Operation(summary = "教师查看某选题的提交物列表（只读）")
+    @GetMapping("/selections/{selectionId}/submissions")
+    public Result<PageResult<org.spring_web.spring_boot_service.dto.CommonDtos.SubmissionBriefVO>>
+            selectionSubmissions(@PathVariable String selectionId) {
+        return Result.ok(submissionService.list(selectionId));
     }
 }

@@ -58,6 +58,31 @@ public class DefenseAnswer {
     private String asrModel;
 
     /**
+     * 单题得分 0~100（AI 评分后回填）
+     */
+    private BigDecimal score;
+
+    /**
+     * 该维度是否通过（服务端按阈值判定：1 通过 / 0 不通过）
+     */
+    private Integer passed;
+
+    /**
+     * 判定证据：转写片段或要点，供复核与申诉
+     */
+    private String evidence;
+
+    /**
+     * AI 简评
+     */
+    private String comment;
+
+    /**
+     * 学生主动跳过（加分题可跳过）
+     */
+    private Integer skipped;
+
+    /**
      * 状态：UPLOADED / TRANSCRIBING / TRANSCRIBED / FAILED
      */
     private String status;

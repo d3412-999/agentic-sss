@@ -30,8 +30,14 @@ public final class OfferingDtos {
             @NotNull @Min(0) @Max(100) Integer report) {
     }
 
+    /**
+     * 答辩设置。
+     *
+     * <p>{@code questionCount} 为 {@code null} 表示「不限」：不再提供固定题数配置，
+     * 发起答辩时由教师指定本次题数，未指定则用服务端默认值。
+     * 旧的 {@code defenseMode} 已移除（固定走 AI 异步答辩），旧客户端多传该字段会被忽略。</p>
+     */
     public record DefenseConfig(
-            String defenseMode,
             Integer questionCount,
             Integer maxAnswerSeconds,
             Boolean allowRetry,
@@ -47,8 +53,14 @@ public final class OfferingDtos {
             LocalDate defenseEnd) {
     }
 
+    /**
+     * 新建开课。
+     *
+     * <p>{@code courseId} 已改为可选：前端不再选择课程模板，缺省时由 Service 绑定默认模板。
+     * {@code topicSelectLimit} 仅为兼容旧客户端保留，传入值不再生效（统一按「不限」处理）。</p>
+     */
     public record OfferingCreateRequest(
-            @NotBlank(message = "courseId 不能为空") String courseId,
+            String courseId,
             @NotBlank(message = "学期不能为空") String semester,
             @NotBlank(message = "教学班不能为空") @Size(max = 50) String className,
             String description,
@@ -163,6 +175,12 @@ public final class OfferingDtos {
             String email) {
     }
 
+    /**
+     * 名单行。
+     *
+     * <p>不含任何密码字段：学生账号统一使用后端配置的默认密码并强制首次改密，
+     * 教师端既不生成、也不展示一次性密码。</p>
+     */
     public record StudentVO(
             String studentId,
             String studentNo,
@@ -174,13 +192,9 @@ public final class OfferingDtos {
             boolean submitted,
             String defenseStatus,
             BigDecimal finalScore,
-            OffsetDateTime lastLoginAt,
-            String initialPassword) {
+            OffsetDateTime lastLoginAt) {
     }
 
     public record StudentStatusPatch(@NotBlank String status) {
-    }
-
-    public record ResetPasswordVO(String initialPassword, boolean mustChangePassword) {
     }
 }

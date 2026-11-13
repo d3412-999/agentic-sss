@@ -400,7 +400,8 @@ public class GradeService {
         try {
             taskService.markRunning(taskId, 30);
             Offering offering = offeringMapper.selectById(offeringId);
-            Course course = offering == null ? null : courseMapper.selectById(offering.getCourseId());
+            Course course = offering == null || offering.getCourseId() == null
+                    ? null : courseMapper.selectById(offering.getCourseId());
             StringBuilder csv = new StringBuilder();
             csv.append('\ufeff').append("学号,姓名,班级,选题数,答辩分,源码分,报告分,总评,等级,教师评语,发布时间\n");
             List<Grade> grades = gradeMapper.selectList(new LambdaQueryWrapper<Grade>()

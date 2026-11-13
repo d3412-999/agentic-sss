@@ -72,12 +72,7 @@ public class Offering {
     private Integer weightReport;
 
     /**
-     * 答辩组织方式：PER_STUDENT / PER_TOPIC
-     */
-    private String defenseMode;
-
-    /**
-     * 答辩题目数量
+     * 答辩题目数量；null = 不限（发起答辩时按需指定）。
      */
     private Integer questionCount;
 

@@ -19,6 +19,7 @@ public enum ErrorCode {
     FORBIDDEN(40301, HttpStatus.FORBIDDEN, "没有访问权限"),
 
     NOT_FOUND(40401, HttpStatus.NOT_FOUND, "资源不存在"),
+    METHOD_NOT_ALLOWED(40501, HttpStatus.METHOD_NOT_ALLOWED, "接口不支持该请求方法"),
 
     CONFLICT(40901, HttpStatus.CONFLICT, "资源状态已变更，请刷新后重试"),
     DUPLICATE_OPERATION(40902, HttpStatus.CONFLICT, "请勿重复操作"),

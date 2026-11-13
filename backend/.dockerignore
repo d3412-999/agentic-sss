@@ -1,0 +1,11 @@
+.gradle
+build/classes
+build/resources
+build/tmp
+build/generated
+build/reports
+build/test-results
+build/libs/*-plain.jar
+data
+*.log
+.idea

@@ -39,22 +39,24 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 学生选题：本项目并发压力最大、最容易出现超卖的地方。
+ * 学生选题：本项目并发压力最大、最容易出现丢更新的地方。
  *
- * <p><b>容量控制为什么不用「先查再改」</b>：两个事务同时读到 selectedCount=9/max=10，
- * 都判断「还有名额」并各自 +1，结果变成 11。正确做法是让数据库用一条带条件的
- * UPDATE 完成判断与递增，MySQL 的行锁天然串行化：</p>
+ * <p><b>计数为什么不用「先查再改」</b>：两个事务同时读到 selectedCount=9，
+ * 各自 +1 写回 10，实际已有 11 人选择。正确做法是让数据库用一条语句完成递增，
+ * MySQL 的行锁天然串行化：</p>
  * <pre>
  * UPDATE topic SET selected_count = selected_count + 1, version = version + 1
- *  WHERE id = ? AND deleted = 0 AND selected_count &lt; max_select_count;
+ *  WHERE id = ? AND deleted = 0;
  * </pre>
- * <p>影响行数为 0 就是「已满 / 已下架」。SQL 放在 {@link TopicExtraMapper} 里手写，
+ * <p>影响行数为 0 只可能是题目已被删除。SQL 放在 {@link TopicExtraMapper} 里手写，
  * 不走 {@code update(null, LambdaUpdateWrapper)}——后者会被乐观锁插件与 SQL 拼接规则影响，
- * 行为不够确定。预占与释放是两条独立 SQL：预占卡上限，释放只保证不为负，
- * 这样教师中途调低上限时学生依然能退选。</p>
+ * 行为不够确定。</p>
+ *
+ * <p><b>V9 起题目没有容量上限</b>：{@code selected_count} 退化为「已选人数」统计，
+ * WHERE 里不再有 {@code selected_count < max_select_count}，学生只要题目存在就能选。</p>
  *
  * <p>再加上 uk_selection_student_topic 唯一索引兜底（DuplicateKeyException 由全局异常
- * 转成 40902），以及 @Transactional 保证「预占 + 写入选题」同生共死，整条链路才闭环。</p>
+ * 转成 40902），以及 @Transactional 保证「计数 + 写入选题」同生共死，整条链路才闭环。</p>
  *
  * <p>另一个容易被忽略的点：退选只把 status 改成 CANCELED 而不删记录，
  * 因为唯一索引不认 deleted 标记；重新选同一题时复用旧记录，否则会撞唯一键。</p>
@@ -105,26 +107,27 @@ public class SelectionService {
         BizAssert.param(!distinct.isEmpty() && distinct.size() <= batchMax,
                 "单次最多选择 " + batchMax + " 道题目");
 
-        // 4. 已有 + 本次不能超过每人限额
+        // 4. 已有 + 本次不能超过每人限额；NULL = 不限。
+        //    这里必须先判空再比较：Integer 与 int 比较会自动拆箱，null 会抛 NPE。
         List<Selection> existing = selectionMapper.selectList(new LambdaQueryWrapper<Selection>()
                 .eq(Selection::getOfferingId, offeringId)
                 .eq(Selection::getStudentId, studentId)
                 .ne(Selection::getStatus, "CANCELED"));
-        BizAssert.rule(existing.size() + distinct.size() <= offering.getTopicSelectLimit(),
-                "超出每人限选题目数（上限 " + offering.getTopicSelectLimit() + "）");
+        Integer topicLimit = offering.getTopicSelectLimit();
+        BizAssert.rule(topicLimit == null || existing.size() + distinct.size() <= topicLimit,
+                "超出每人限选题目数（上限 " + topicLimit + "）");
 
         List<SelectionDtos.CreatedItemVO> created = new ArrayList<>();
         for (String rawTopicId : distinct) {
             Long topicId = BizAssert.id(rawTopicId, "topicId");
             Topic topic = BizAssert.found(topicMapper.selectById(topicId), "题目");
             BizAssert.rule(topic.getOfferingId().equals(offeringId), "题目不属于该开课");
-            BizAssert.rule("PUBLISHED".equals(topic.getStatus()), "题目未发布：" + topic.getTitle());
 
-            // 5. 原子预占名额（判断 + 递增在同一条 SQL 的 WHERE 内完成，MySQL 行锁串行化）
-            //    0 行 = 名额已满 / 已下架 / 已删除，统一按 TOPIC_FULL 反馈给前端刷新题目列表
+            // 5. 原子计数（判断 + 递增在同一条 SQL 内完成，MySQL 行锁串行化）
+            //    V9 起没有容量上限，0 行只可能是「题目已被删除」
             if (topicExtraMapper.reserveOne(topicId) != 1) {
                 throw new BizException(ErrorCode.BUSINESS_RULE,
-                        "题目名额已满或已下架：" + topic.getTitle(), Map.of("reason", "TOPIC_FULL"));
+                        "题目已被删除或下架：" + topic.getTitle(), Map.of("reason", "TOPIC_UNAVAILABLE"));
             }
 
             // 6. 已退选过同一题则复用记录，避开 (student_id, topic_id) 唯一索引
@@ -177,6 +180,23 @@ public class SelectionService {
         Page<Selection> result = selectionMapper.selectPage(Page.of(page, size), wrapper);
         List<SelectionDtos.SelectionVO> list = result.getRecords().stream().map(this::toVo).toList();
         return PageResult.of(list, result.getTotal(), page, size);
+    }
+
+    /**
+     * 教师端：查看某个学生在本开课下的选题。
+     *
+     * <p>教师端「提交评审」需要先知道学生的 selectionId 才能查提交物，
+     * 而 {@code /student/selections} 只返回当前登录学生自己的。这是本次新增的唯一教师侧只读接口。</p>
+     */
+    public List<SelectionDtos.SelectionVO> teacherByStudent(String offeringId, String studentId) {
+        Offering offering = offeringService.ownedOffering(offeringId);
+        Long sid = BizAssert.id(studentId, "studentId");
+        List<Selection> list = selectionMapper.selectList(new LambdaQueryWrapper<Selection>()
+                .eq(Selection::getOfferingId, offering.getId())
+                .eq(Selection::getStudentId, sid)
+                .ne(Selection::getStatus, "CANCELED")
+                .orderByDesc(Selection::getId));
+        return list.stream().map(this::toVo).toList();
     }
 
     public SelectionDtos.SelectionDetailVO detail(String selectionId) {

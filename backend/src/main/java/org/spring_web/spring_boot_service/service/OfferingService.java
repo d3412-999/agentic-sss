@@ -6,7 +6,9 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -141,11 +143,8 @@ public class OfferingService {
     public OfferingDtos.OfferingVO create(OfferingDtos.OfferingCreateRequest request) {
         validateWeights(request.weights());
         BizAssert.param(Times.validSemester(request.semester()), "学期格式应为 YYYY-YYYY-N，且年份连续");
-        Long courseId = BizAssert.id(request.courseId(), "courseId");
-        BizAssert.found(courseMapper.selectById(courseId), "课程");
-
-        int limit = request.topicSelectLimit() == null ? 3 : request.topicSelectLimit();
-        BizAssert.param(limit >= 1 && limit <= 10, "每人限选题目数需在 1~10 之间");
+        // 课程模板不再是必填项：前端已移除该选择，缺省时绑定系统内默认模板（见 resolveCourseId）
+        Long courseId = resolveCourseId(request.courseId());
 
         Long duplicate = offeringMapper.selectCount(new LambdaQueryWrapper<Offering>()
                 .eq(Offering::getTeacherId, SecurityUtils.userId())
@@ -160,7 +159,8 @@ public class OfferingService {
         offering.setClassName(request.className());
         offering.setDescription(request.description());
         offering.setStatus("DRAFT");
-        offering.setTopicSelectLimit(limit);
+        // NULL = 不限：不再限制每人可选题目数，旧客户端传入的值也一律忽略
+        offering.setTopicSelectLimit(null);
         offering.setVersion(0);
         applyWeights(offering, request.weights());
         applyDefenseConfig(offering, request.defenseConfig());
@@ -174,6 +174,25 @@ public class OfferingService {
         return toVo(offering);
     }
 
+    /**
+     * 解析新建开课要绑定的课程模板。
+     *
+     * <p>前端已移除「课程模板」下拉，因此该值可以缺省：缺省时取系统内第一条模板，
+     * 一条模板都没有时返回 {@code null}（V8 已把 {@code offering.course_id} 改为可空）。
+     * 显式传入时仍然校验存在性，避免脏 ID 落库。</p>
+     */
+    private Long resolveCourseId(String rawCourseId) {
+        if (StringUtils.hasText(rawCourseId)) {
+            Long courseId = BizAssert.id(rawCourseId, "courseId");
+            BizAssert.found(courseMapper.selectById(courseId), "课程");
+            return courseId;
+        }
+        Course fallback = courseMapper.selectOne(new LambdaQueryWrapper<Course>()
+                .orderByAsc(Course::getId)
+                .last("limit 1"));
+        return fallback == null ? null : fallback.getId();
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public OfferingDtos.OfferingVO patch(String offeringId, OfferingDtos.OfferingPatchRequest request) {
         Offering offering = ownedOffering(offeringId);
@@ -183,10 +202,10 @@ public class OfferingService {
         boolean published = "PUBLISHED".equals(offering.getStatus());
 
         if (published) {
-            // 已发布：只允许延后时间、调整答辩配置与说明，禁止改权重/限选数/班级
-            BizAssert.state(request.weights() == null && request.topicSelectLimit() == null
-                            && request.className() == null,
-                    "已发布的开课不可修改权重、限选数或教学班");
+            // 已发布：只允许延后时间、调整答辩配置与说明，禁止改权重/班级。
+            // topicSelectLimit 已废弃，旧客户端即使传了也不参与拦截（值本身会被忽略）。
+            BizAssert.state(request.weights() == null && request.className() == null,
+                    "已发布的开课不可修改权重或教学班");
             if (request.timeline() != null) {
                 validateTimelineExtension(offering, request.timeline());
                 applyTimeline(offering, request.timeline());
@@ -197,11 +216,7 @@ public class OfferingService {
                 validateWeights(request.weights());
                 applyWeights(offering, request.weights());
             }
-            if (request.topicSelectLimit() != null) {
-                BizAssert.param(request.topicSelectLimit() >= 1 && request.topicSelectLimit() <= 10,
-                        "每人限选题目数需在 1~10 之间");
-                offering.setTopicSelectLimit(request.topicSelectLimit());
-            }
+            // 「每人最多选几题」已移除：不再接收也不再校验该值，保持 NULL（不限）
             if (request.className() != null) {
                 offering.setClassName(request.className());
             }
@@ -255,11 +270,11 @@ public class OfferingService {
         if (students == null || students == 0) {
             blockers.add(new OfferingDtos.Blocker("NO_STUDENT", "尚未导入学生名单"));
         }
+        // 题目没有状态机，只要建过题就算满足前置条件
         Long topics = topicMapper.selectCount(new LambdaQueryWrapper<Topic>()
-                .eq(Topic::getOfferingId, offering.getId())
-                .eq(Topic::getStatus, "PUBLISHED"));
+                .eq(Topic::getOfferingId, offering.getId()));
         if (topics == null || topics == 0) {
-            blockers.add(new OfferingDtos.Blocker("NO_TOPIC", "尚未发布任何题目"));
+            blockers.add(new OfferingDtos.Blocker("NO_TOPIC", "尚未创建任何题目"));
         }
         if (offering.getSubmitDeadline() == null || !offering.getSubmitDeadline().isAfter(Times.now())) {
             blockers.add(new OfferingDtos.Blocker("DEADLINE_INVALID", "提交截止时间必须晚于当前时间"));
@@ -384,7 +399,7 @@ public class OfferingService {
     }
 
     private OfferingDtos.StudentOfferingVO studentOfferingVo(Offering offering, Long studentId) {
-        Course course = courseMapper.selectById(offering.getCourseId());
+        Course course = offering.getCourseId() == null ? null : courseMapper.selectById(offering.getCourseId());
         SysUser teacher = sysUserMapper.selectById(offering.getTeacherId());
         Long myCount = selectionMapper.selectCount(new LambdaQueryWrapper<Selection>()
                 .eq(Selection::getOfferingId, offering.getId())
@@ -394,7 +409,8 @@ public class OfferingService {
         String reason = null;
         if (!inSelectWindow(offering)) {
             reason = "NOT_IN_WINDOW";
-        } else if (selected >= offering.getTopicSelectLimit()) {
+        } else if (offering.getTopicSelectLimit() != null && selected >= offering.getTopicSelectLimit()) {
+            // NULL = 不限：没有配置上限时永远不触发「已达上限」
             reason = "LIMIT_REACHED";
         }
         if (!"PUBLISHED".equals(offering.getStatus())) {
@@ -452,15 +468,12 @@ public class OfferingService {
 
     private void applyDefenseConfig(Offering offering, OfferingDtos.DefenseConfig config) {
         OfferingDtos.DefenseConfig effective = config == null
-                ? new OfferingDtos.DefenseConfig("PER_STUDENT", 6, 180, false, "zh-CN", false)
+                ? new OfferingDtos.DefenseConfig(null, 180, false, "zh-CN", false)
                 : config;
-        int questions = effective.questionCount() == null ? 6 : effective.questionCount();
         int seconds = effective.maxAnswerSeconds() == null ? 180 : effective.maxAnswerSeconds();
-        BizAssert.param(questions >= 3 && questions <= 12, "答辩题目数需在 3~12 之间");
         BizAssert.param(seconds >= 60 && seconds <= 600, "单题作答时限需在 60~600 秒之间");
-        offering.setDefenseMode(StringUtils.hasText(effective.defenseMode())
-                ? effective.defenseMode() : "PER_STUDENT");
-        offering.setQuestionCount(questions);
+        // 统一「不限」：即使旧客户端仍传固定题数也忽略，NULL 由发起答辩时按需指定
+        offering.setQuestionCount(null);
         offering.setMaxAnswerSeconds(seconds);
         offering.setAllowRetry(Boolean.TRUE.equals(effective.allowRetry()) ? 1 : 0);
         offering.setEnableVideo(Boolean.TRUE.equals(effective.enableVideo()) ? 1 : 0);
@@ -480,7 +493,9 @@ public class OfferingService {
 
     /** 时间链单调：选题开始 ≤ 选题结束 ≤ 提交截止 ≤ 答辩开始 ≤ 答辩结束。 */
     private void validateTimeline(Offering offering) {
-        var chain = List.of(offering.getSelectStart(), offering.getSelectEnd(),
+        // 这里必须用允许 null 的集合：答辩结束等节点本来就是可选的，
+        // List.of(...) 遇到 null 会抛 NullPointerException，最终变成 500「服务端异常」。
+        List<LocalDateTime> chain = Arrays.asList(offering.getSelectStart(), offering.getSelectEnd(),
                 offering.getSubmitDeadline(), offering.getDefenseStart(), offering.getDefenseEnd());
         for (int i = 1; i < chain.size(); i++) {
             if (chain.get(i - 1) != null && chain.get(i) != null
@@ -509,12 +524,14 @@ public class OfferingService {
     }
 
     private OfferingDtos.OfferingVO toVo(Offering o, OfferingDtos.Stats stats) {
-        Course course = courseMapper.selectById(o.getCourseId());
-        return new OfferingDtos.OfferingVO(String.valueOf(o.getId()), String.valueOf(o.getCourseId()),
+        // course_id 自 V8 起可空（前端不再选择课程模板），因此不能直接 selectById(null)
+        Course course = o.getCourseId() == null ? null : courseMapper.selectById(o.getCourseId());
+        return new OfferingDtos.OfferingVO(String.valueOf(o.getId()),
+                o.getCourseId() == null ? null : String.valueOf(o.getCourseId()),
                 course == null ? "" : course.getName(), o.getSemester(), o.getClassName(),
                 o.getDescription(), o.getStatus(), o.getTopicSelectLimit(),
                 new OfferingDtos.Weights(o.getWeightDefense(), o.getWeightCode(), o.getWeightReport()),
-                new OfferingDtos.DefenseConfig(o.getDefenseMode(), o.getQuestionCount(),
+                new OfferingDtos.DefenseConfig(o.getQuestionCount(),
                         o.getMaxAnswerSeconds(), Integer.valueOf(1).equals(o.getAllowRetry()),
                         o.getLanguage(), Integer.valueOf(1).equals(o.getEnableVideo())),
                 new OfferingDtos.Timeline(date(o.getSelectStart()), date(o.getSelectEnd()),

@@ -48,9 +48,79 @@ public class DefenseSession {
     private String selectionIds;
 
     /**
-     * 题目数量
+     * 题目数量（不含加分题）
      */
     private Integer questionCount;
+
+    /**
+     * 发起时的源码评分快照：题数档位由它决定，之后源码重评不回写
+     */
+    private BigDecimal codeScoreSnapshot;
+
+    /**
+     * 题数档位：T0 / T1 / T2 / T3 / T4
+     */
+    private String questionRuleTier;
+
+    /**
+     * 难度配比快照，如 {@code EASY:3,MEDIUM:2,HARD:1}
+     */
+    private String difficultyMix;
+
+    /**
+     * 教师手动指定题数时的理由；非空即视为覆盖了分档规则
+     */
+    private String questionOverrideReason;
+
+    /**
+     * 加分题数量（不计入 questionCount）
+     */
+    private Integer bonusQuestionCount;
+
+    /**
+     * 三原则判定：1 完全依赖 AI / 0 未判定为依赖 / null 未判定（历史数据）
+     */
+    private Integer aiDependent;
+
+    /**
+     * P1/P2/P3 逐项结论 JSON 快照
+     */
+    private String principleResult;
+
+    /**
+     * 教师是否覆盖过判定
+     */
+    private Integer aiDependentOverridden;
+
+    /**
+     * 覆盖理由（仅留痕）
+     */
+    private String overrideReason;
+
+    /**
+     * 覆盖人 ID
+     */
+    private Long overrideBy;
+
+    /**
+     * 覆盖时间
+     */
+    private LocalDateTime overrideAt;
+
+    /**
+     * 加分题结果：CORRECT / WRONG / UNANSWERED
+     */
+    private String bonusResult;
+
+    /**
+     * 加分题得分（仅供展示，不进总分）
+     */
+    private BigDecimal bonusScore;
+
+    /**
+     * 加分题 AI 简评（不进总分）
+     */
+    private String bonusComment;
 
     /**
      * 答辩总分

@@ -117,6 +117,20 @@ public class AiServiceClient {
         return post("/code/review", payload);
     }
 
+    /**
+     * 源码多文件汇总评审（map-reduce 的 reduce 阶段）。
+     *
+     * <p>入参只带各份的摘要与得分，不带源码原文——9 份工程的原文拼起来必然爆上下文。</p>
+     */
+    public Map<String, Object> aggregateCode(Map<String, Object> payload) {
+        return post("/code/aggregate", payload);
+    }
+
+    /** 报告多文件汇总评审（reduce 阶段），入参同为各份摘要。 */
+    public Map<String, Object> aggregateReport(Map<String, Object> payload) {
+        return post("/report/aggregate", payload);
+    }
+
     /** 21.5：报告-源码一致性检查（LightRAG）。 */
     public Map<String, Object> checkConsistency(Map<String, Object> payload) {
         return post("/consistency", payload);

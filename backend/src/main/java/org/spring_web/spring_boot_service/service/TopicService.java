@@ -1,13 +1,19 @@
 package org.spring_web.spring_boot_service.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.Difficulty;
 import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.common.PageResult;
 import org.spring_web.spring_boot_service.common.Times;
@@ -30,68 +36,73 @@ import org.springframework.util.StringUtils;
 /**
  * 题目管理（教师）与题目浏览（学生）。
  *
- * <p>{@code selected_count} 是容量预占字段，所有增减都由 SelectionService 用原子 SQL 完成，
- * 这里只读不写，避免出现「两个服务各自改计数」导致超卖。</p>
+ * <p>V9 之后题目模型只剩「标题 / 描述 / 难度 / 附件」，没有草稿状态、没有容量上限：
+ * 创建即对学生可见，{@code selected_count} 退化为纯统计字段。附件以 file_object 引用方式挂载，
+ * 文件本身的合法性在 {@link FileTypeValidator} 里校验，本类只负责「谁能挂哪个文件」。</p>
  */
 @Service
 @RequiredArgsConstructor
 public class TopicService {
 
+    private static final String ATTACHMENT_BUCKET = FileUploadService.TOPIC_ATTACHMENT;
+
     private final TopicMapper topicMapper;
     private final TopicAttachmentMapper attachmentMapper;
     private final FileObjectMapper fileObjectMapper;
+    private final FileStorageService fileStorage;
+    private final FileTypeValidator fileTypeValidator;
     private final SelectionMapper selectionMapper;
     private final OfferingStudentMapper offeringStudentMapper;
     private final OfferingService offeringService;
     private final AuditLogService auditLog;
-    private final JsonCodec json;
 
     // ---------------------------------------------------------------- 教师端
 
     public PageResult<TopicDtos.TopicListItemVO> teacherTopics(
-            String offeringId, String status, String keyword, long page, long size) {
+            String offeringId, String difficulty, String keyword, long page, long size) {
         Long id = BizAssert.id(offeringId, "offeringId");
         offeringService.ownedOffering(offeringId);
+        String difficultyCode = Difficulty.filterCode(difficulty);
         Page<Topic> result = topicMapper.selectPage(Page.of(page, size),
                 new LambdaQueryWrapper<Topic>()
                         .eq(Topic::getOfferingId, id)
-                        .eq(StringUtils.hasText(status), Topic::getStatus, status)
+                        .eq(difficultyCode != null, Topic::getDifficulty, difficultyCode)
                         .like(StringUtils.hasText(keyword), Topic::getTitle, keyword)
                         .orderByDesc(Topic::getId));
-        return PageResult.of(result.getRecords().stream().map(this::listItemVo).toList(),
-                result.getTotal(), page, size);
+        Map<Long, Long> counts = attachmentCounts(result.getRecords().stream().map(Topic::getId).toList());
+        List<TopicDtos.TopicListItemVO> list = result.getRecords().stream()
+                .map(topic -> listItemVo(topic, counts.getOrDefault(topic.getId(), 0L).intValue()))
+                .toList();
+        return PageResult.of(list, result.getTotal(), page, size);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public TopicDtos.TopicVO create(String offeringId, TopicDtos.TopicCreateRequest request) {
         Long oid = BizAssert.id(offeringId, "offeringId");
         offeringService.ownedOffering(offeringId);
+        String title = request.title().trim();
         Long duplicate = topicMapper.selectCount(new LambdaQueryWrapper<Topic>()
-                .eq(Topic::getOfferingId, oid).eq(Topic::getTitle, request.title()));
+                .eq(Topic::getOfferingId, oid).eq(Topic::getTitle, title));
         BizAssert.state(duplicate == null || duplicate == 0, "同一开课内题目名称不能重复");
+
+        // 先把附件解析完再落库：附件非法时整体失败，不会留下一个没有附件的半成品题目
+        List<FileObject> files = resolveOwnedFiles(request.attachments());
+        BizAssert.param(files.size() <= fileTypeValidator.policy().getMaxPerTopic(),
+                "单个题目最多 " + fileTypeValidator.policy().getMaxPerTopic() + " 个附件");
 
         Topic topic = new Topic();
         topic.setOfferingId(oid);
-        topic.setTitle(request.title());
-        topic.setDescription(request.description());
-        topic.setRequirements(request.requirements());
-        topic.setDifficulty(StringUtils.hasText(request.difficulty()) ? request.difficulty() : "MEDIUM");
-        topic.setMaxSelectCount(request.maxSelectCount() == null ? 1 : request.maxSelectCount());
+        topic.setTitle(title);
+        topic.setDescription(request.description().trim());
+        topic.setDifficulty(Difficulty.require(request.difficulty()));
         topic.setSelectedCount(0);
-        topic.setTags(json.write(request.tags()));
-        topic.setExpectedTech(json.write(request.expectedTech()));
-        topic.setStatus(StringUtils.hasText(request.status()) ? request.status() : "DRAFT");
-        if ("PUBLISHED".equals(topic.getStatus())) {
-            validatePublishable(topic);
-            topic.setPublishedAt(Times.now());
-        }
         topic.setCreatedBy(SecurityUtils.userId());
         topic.setVersion(0);
         topic.setCreatedAt(Times.now());
         topic.setUpdatedAt(Times.now());
         topicMapper.insert(topic);
 
-        saveAttachments(topic.getId(), request.attachments());
+        link(topic.getId(), files, 0);
         auditLog.record("TOPIC_CREATE", "TOPIC", topic.getId(), null, toVo(topic), null);
         return toVo(topic);
     }
@@ -118,39 +129,22 @@ public class TopicService {
         TopicDtos.TopicVO before = toVo(topic);
         boolean hasSelection = topic.getSelectedCount() != null && topic.getSelectedCount() > 0;
 
-        if (request.title() != null) {
-            BizAssert.state(!hasSelection || request.title().equals(topic.getTitle()),
-                    "已有学生选择该题，不能修改题目名称");
+        if (request.title() != null && !request.title().trim().equals(topic.getTitle())) {
+            String title = request.title().trim();
+            BizAssert.state(!hasSelection, "已有学生选择该题，不能修改题目名称");
             Long duplicate = topicMapper.selectCount(new LambdaQueryWrapper<Topic>()
                     .eq(Topic::getOfferingId, topic.getOfferingId())
-                    .eq(Topic::getTitle, request.title())
+                    .eq(Topic::getTitle, title)
                     .ne(Topic::getId, topic.getId()));
             BizAssert.state(duplicate == null || duplicate == 0, "同一开课内题目名称不能重复");
-            topic.setTitle(request.title());
-        }
-        if (request.maxSelectCount() != null) {
-            BizAssert.state(!hasSelection || request.maxSelectCount() >= topic.getSelectedCount(),
-                    "人数上限不能低于已选人数");
-            topic.setMaxSelectCount(request.maxSelectCount());
+            topic.setTitle(title);
         }
         if (request.description() != null) {
-            topic.setDescription(request.description());
+            topic.setDescription(request.description().trim());
         }
-        if (request.requirements() != null) {
-            topic.setRequirements(request.requirements());
+        if (StringUtils.hasText(request.difficulty())) {
+            topic.setDifficulty(Difficulty.require(request.difficulty()));
         }
-        if (request.difficulty() != null) {
-            topic.setDifficulty(request.difficulty());
-        }
-        if (request.tags() != null) {
-            topic.setTags(json.write(request.tags()));
-        }
-        if (request.expectedTech() != null) {
-            topic.setExpectedTech(json.write(request.expectedTech()));
-        }
-        // 状态只能走 publish / archive，避免绕过「发布前置校验」直接改状态
-        BizAssert.param(request.status() == null || request.status().equals(topic.getStatus()),
-                "题目状态请使用发布 / 归档接口变更");
         topic.setVersion(request.version());
         topic.setUpdatedAt(Times.now());
         if (topicMapper.updateById(topic) == 0) {
@@ -166,69 +160,79 @@ public class TopicService {
         Long used = selectionMapper.selectCount(new LambdaQueryWrapper<Selection>()
                 .eq(Selection::getTopicId, topic.getId())
                 .ne(Selection::getStatus, "CANCELED"));
-        BizAssert.rule(used == null || used == 0, "已有学生选择该题，请先联系学生退选或改为归档");
+        BizAssert.rule(used == null || used == 0, "已有学生选择该题，请先联系学生退选");
+        // 逻辑删除题目后，附件引用一并解绑，但文件本体保留（可能被其他题目秒传复用）
+        attachmentMapper.delete(new LambdaQueryWrapper<TopicAttachment>()
+                .eq(TopicAttachment::getTopicId, topic.getId()));
         topicMapper.deleteById(topic.getId());
         auditLog.record("TOPIC_DELETE", "TOPIC", topic.getId(), toVo(topic), null, null);
     }
 
+    // ---------------------------------------------------------------- 附件
+
+    /** 追加附件（编辑时使用）。返回挂载后的完整列表。 */
     @Transactional(rollbackFor = Exception.class)
-    public TopicDtos.TopicVO publish(String topicId) {
+    public List<TopicDtos.AttachmentVO> addAttachments(String topicId, List<String> fileIds) {
         Topic topic = owned(topicId);
-        BizAssert.state(!"ARCHIVED".equals(topic.getStatus()), "已归档题目不能发布");
-        validatePublishable(topic);
-        topic.setStatus("PUBLISHED");
-        topic.setPublishedAt(Times.now());
-        topic.setUpdatedAt(Times.now());
-        if (topicMapper.updateById(topic) == 0) {
-            throw new BizException(ErrorCode.CONFLICT, "题目状态已变更，请刷新后重试");
+        List<TopicAttachment> existing = links(topic.getId());
+        List<FileObject> files = resolveOwnedFiles(fileIds);
+        int limit = fileTypeValidator.policy().getMaxPerTopic();
+        BizAssert.param(existing.size() + files.size() <= limit,
+                "单个题目最多 " + limit + " 个附件，当前已有 " + existing.size() + " 个");
+
+        Set<Long> already = new LinkedHashSet<>(existing.stream().map(TopicAttachment::getFileId).toList());
+        List<FileObject> fresh = files.stream().filter(f -> !already.contains(f.getId())).toList();
+        link(topic.getId(), fresh, existing.size());
+        if (!fresh.isEmpty()) {
+            auditLog.record("TOPIC_ATTACHMENT_ADD", "TOPIC", topic.getId(), null,
+                    fresh.stream().map(FileObject::getFilename).toList(), null);
         }
-        return toVo(topic);
+        return attachments(topic.getId());
     }
 
+    /** 解绑附件；该文件不再被任何题目引用时，连同磁盘文件一起清理。 */
     @Transactional(rollbackFor = Exception.class)
-    public TopicDtos.PublishBatchResult publishBatch(String offeringId, TopicDtos.PublishBatchRequest request) {
-        offeringService.ownedOffering(offeringId);
-        List<TopicDtos.Failed> failed = new ArrayList<>();
-        int published = 0;
-        for (String rawId : request.topicIds()) {
-            Topic topic;
-            try {
-                topic = topicMapper.selectById(BizAssert.id(rawId, "topicId"));
-            } catch (BizException ex) {
-                failed.add(new TopicDtos.Failed(rawId, ex.getMessage()));
-                continue;
-            }
-            if (topic == null || !topic.getOfferingId().equals(BizAssert.id(offeringId, "offeringId"))) {
-                failed.add(new TopicDtos.Failed(rawId, "题目不存在或不属于该开课"));
-                continue;
-            }
-            if (!StringUtils.hasText(topic.getDescription())
-                    || topic.getMaxSelectCount() == null || topic.getMaxSelectCount() < 1) {
-                failed.add(new TopicDtos.Failed(rawId, "描述为空或人数上限小于 1"));
-                continue;
-            }
-            topic.setStatus("PUBLISHED");
-            topic.setPublishedAt(Times.now());
-            topic.setUpdatedAt(Times.now());
-            if (topicMapper.updateById(topic) == 0) {
-                // 乐观锁冲突：不能再静默丢弃，否则调用方既不算成功也不算失败
-                failed.add(new TopicDtos.Failed(rawId, "题目状态已变更，请刷新后重试"));
-            } else {
-                published++;
+    public List<TopicDtos.AttachmentVO> removeAttachment(String topicId, String fileId) {
+        Topic topic = owned(topicId);
+        Long fid = BizAssert.id(fileId, "fileId");
+        int removed = attachmentMapper.delete(new LambdaQueryWrapper<TopicAttachment>()
+                .eq(TopicAttachment::getTopicId, topic.getId())
+                .eq(TopicAttachment::getFileId, fid));
+        BizAssert.state(removed > 0, "附件不存在或已被移除");
+
+        Long refs = attachmentMapper.selectCount(new LambdaQueryWrapper<TopicAttachment>()
+                .eq(TopicAttachment::getFileId, fid));
+        if (refs == null || refs == 0) {
+            FileObject file = fileObjectMapper.selectById(fid);
+            if (file != null && ATTACHMENT_BUCKET.equals(file.getBucket())) {
+                fileStorage.deleteQuietly(file);
             }
         }
-        return new TopicDtos.PublishBatchResult(published, failed);
+        auditLog.record("TOPIC_ATTACHMENT_REMOVE", "TOPIC", topic.getId(), fid, null, null);
+        return attachments(topic.getId());
     }
 
+    /** 重新排序：fileIds 必须与当前附件集合完全一致，顺序即新的 sort_no。 */
     @Transactional(rollbackFor = Exception.class)
-    public TopicDtos.TopicVO archive(String topicId) {
+    public List<TopicDtos.AttachmentVO> reorderAttachments(String topicId, List<String> fileIds) {
         Topic topic = owned(topicId);
-        topic.setStatus("ARCHIVED");
-        topic.setUpdatedAt(Times.now());
-        if (topicMapper.updateById(topic) == 0) {
-            throw new BizException(ErrorCode.CONFLICT, "题目状态已变更，请刷新后重试");
+        List<TopicAttachment> existing = links(topic.getId());
+        List<Long> wanted = fileIds.stream().map(raw -> BizAssert.id(raw, "fileId")).toList();
+        Set<Long> current = new LinkedHashSet<>(existing.stream().map(TopicAttachment::getFileId).toList());
+        BizAssert.param(wanted.size() == current.size() && current.containsAll(wanted),
+                "附件列表已变更，请刷新后重试");
+        int sort = 0;
+        for (Long fileId : wanted) {
+            for (TopicAttachment link : existing) {
+                if (link.getFileId().equals(fileId)) {
+                    link.setSortNo(sort++);
+                    attachmentMapper.updateById(link);
+                    break;
+                }
+            }
         }
-        return toVo(topic);
+        // 不动 topic.version：排序只影响附件表，若在这里 bump 版本会让正在编辑的教师下一次保存 409
+        return attachments(topic.getId());
     }
 
     // ---------------------------------------------------------------- 学生端
@@ -237,18 +241,20 @@ public class TopicService {
             String offeringId, String keyword, String difficulty, long page, long size) {
         Long oid = BizAssert.id(offeringId, "offeringId");
         assertInRoster(oid);
+        String difficultyCode = Difficulty.filterCode(difficulty);
         Page<Topic> result = topicMapper.selectPage(Page.of(page, size),
                 new LambdaQueryWrapper<Topic>()
                         .eq(Topic::getOfferingId, oid)
-                        .eq(Topic::getStatus, "PUBLISHED")
-                        .eq(StringUtils.hasText(difficulty) && !"all".equals(difficulty),
-                                Topic::getDifficulty, difficulty)
-                        .and(StringUtils.hasText(keyword), w -> w
-                                .like(Topic::getTitle, keyword).or().like(Topic::getTags, keyword))
+                        .eq(difficultyCode != null, Topic::getDifficulty, difficultyCode)
+                        .like(StringUtils.hasText(keyword), Topic::getTitle, keyword)
                         .orderByDesc(Topic::getId));
-        Long uid = SecurityUtils.userId();
+        List<Long> ids = result.getRecords().stream().map(Topic::getId).toList();
+        Map<Long, Long> counts = attachmentCounts(ids);
+        Set<Long> mine = myTopicIds(oid, SecurityUtils.userId());
         List<TopicDtos.StudentTopicVO> list = result.getRecords().stream()
-                .map(t -> studentTopicVo(t, uid)).toList();
+                .map(topic -> studentTopicVo(topic, counts.getOrDefault(topic.getId(), 0L).intValue(),
+                        mine.contains(topic.getId())))
+                .toList();
         return PageResult.of(list, result.getTotal(), page, size);
     }
 
@@ -257,11 +263,11 @@ public class TopicService {
         assertInRoster(oid);
         Topic topic = load(topicId);
         BizAssert.param(topic.getOfferingId().equals(oid), "题目不属于该开课");
-        BizAssert.rule("PUBLISHED".equals(topic.getStatus()), "题目未发布");
-        TopicDtos.StudentTopicVO base = studentTopicVo(topic, SecurityUtils.userId());
+        TopicDtos.StudentTopicVO base = studentTopicVo(topic, attachments(topic.getId()).size(),
+                selectedByMe(topic.getId(), SecurityUtils.userId()));
         return new TopicDtos.StudentTopicDetailVO(base.id(), base.title(), topic.getDescription(),
-                topic.getRequirements(), base.difficulty(), base.tags(), base.maxSelectCount(),
-                base.selectedCount(), base.remaining(), base.selectedByMe(), attachments(topic.getId()));
+                base.difficulty(), base.difficultyLabel(), base.selectedCount(), base.selectedByMe(),
+                attachments(topic.getId()));
     }
 
     // ---------------------------------------------------------------- 内部
@@ -284,40 +290,107 @@ public class TopicService {
         BizAssert.forbidden(count != null && count > 0, "开课");
     }
 
-    private void validatePublishable(Topic topic) {
-        BizAssert.rule(StringUtils.hasText(topic.getDescription()), "题目描述不能为空");
-        BizAssert.rule(topic.getMaxSelectCount() != null && topic.getMaxSelectCount() >= 1,
-                "人数上限至少为 1");
+    /**
+     * 把前端传来的 fileId 解析成文件对象，并做三重归属校验：
+     * 文件必须存在、必须是「题目附件」用途、必须是当前教师上传的。
+     * 少了第三条，教师就能把学生的提交物挂到自己题目上。
+     */
+    private List<FileObject> resolveOwnedFiles(List<String> fileIds) {
+        if (fileIds == null || fileIds.isEmpty()) {
+            return List.of();
+        }
+        Long uid = SecurityUtils.userId();
+        Set<Long> ids = new LinkedHashSet<>();
+        for (String raw : fileIds) {
+            ids.add(BizAssert.id(raw, "fileId"));
+        }
+        List<FileObject> files = new ArrayList<>();
+        for (Long id : ids) {
+            FileObject file = BizAssert.found(fileObjectMapper.selectById(id), "文件");
+            BizAssert.param(ATTACHMENT_BUCKET.equals(file.getBucket()), "该文件不是题目附件，请重新上传");
+            BizAssert.forbidden(file.getCreatedBy() != null && file.getCreatedBy().equals(uid), "文件");
+            files.add(file);
+        }
+        return files;
     }
 
-    private void saveAttachments(Long topicId, List<String> fileIds) {
-        if (fileIds == null) {
-            return;
+    private void link(Long topicId, List<FileObject> files, int startSort) {
+        int sort = startSort;
+        for (FileObject file : files) {
+            TopicAttachment link = new TopicAttachment();
+            link.setTopicId(topicId);
+            link.setFileId(file.getId());
+            link.setSortNo(sort++);
+            link.setCreatedAt(Times.now());
+            attachmentMapper.insert(link);
         }
-        int sort = 0;
-        for (String raw : fileIds) {
-            Long fileId = BizAssert.id(raw, "fileId");
-            TopicAttachment attachment = new TopicAttachment();
-            attachment.setTopicId(topicId);
-            attachment.setFileId(fileId);
-            attachment.setSortNo(sort++);
-            attachment.setCreatedAt(Times.now());
-            attachmentMapper.insert(attachment);
-        }
+    }
+
+    private List<TopicAttachment> links(Long topicId) {
+        return attachmentMapper.selectList(new LambdaQueryWrapper<TopicAttachment>()
+                .eq(TopicAttachment::getTopicId, topicId)
+                .orderByAsc(TopicAttachment::getSortNo)
+                .orderByAsc(TopicAttachment::getId));
     }
 
     private List<TopicDtos.AttachmentVO> attachments(Long topicId) {
-        List<TopicAttachment> links = attachmentMapper.selectList(
-                new LambdaQueryWrapper<TopicAttachment>().eq(TopicAttachment::getTopicId, topicId));
         List<TopicDtos.AttachmentVO> list = new ArrayList<>();
-        for (TopicAttachment link : links) {
+        for (TopicAttachment link : links(topicId)) {
             FileObject file = fileObjectMapper.selectById(link.getFileId());
-            if (file != null) {
-                list.add(new TopicDtos.AttachmentVO(String.valueOf(file.getId()), file.getFilename(),
-                        "/api/v1/files/" + file.getId() + "/download"));
+            if (file == null) {
+                continue;
             }
+            list.add(new TopicDtos.AttachmentVO(String.valueOf(file.getId()), file.getFilename(),
+                    file.getContentType(), file.getSizeBytes() == null ? 0 : file.getSizeBytes(),
+                    "/api/v1/files/" + file.getId() + "/download"));
         }
         return list;
+    }
+
+    private Map<Long, Long> attachmentCounts(List<Long> topicIds) {
+        List<Long> ids = topicIds == null ? List.of()
+                : topicIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return indexGroupedCount(attachmentMapper.selectMaps(
+                new QueryWrapper<TopicAttachment>()
+                        .select("topic_id", "count(*) AS c")
+                        .in("topic_id", ids)
+                        .groupBy("topic_id")), "topic_id");
+    }
+
+    private Map<Long, Long> indexGroupedCount(List<Map<String, Object>> rows, String keyColumn) {
+        Map<Long, Long> result = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long key = groupedLong(row, keyColumn);
+            if (key != null) {
+                Long value = groupedLong(row, "c");
+                result.put(key, value == null ? 0L : value);
+            }
+        }
+        return result;
+    }
+
+    private Long groupedLong(Map<String, Object> row, String column) {
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (column.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue() instanceof Number number ? number.longValue() : null;
+            }
+        }
+        return null;
+    }
+
+    private Set<Long> myTopicIds(Long offeringId, Long studentId) {
+        List<Selection> mine = selectionMapper.selectList(new LambdaQueryWrapper<Selection>()
+                .eq(Selection::getOfferingId, offeringId)
+                .eq(Selection::getStudentId, studentId)
+                .ne(Selection::getStatus, "CANCELED"));
+        Set<Long> ids = new LinkedHashSet<>();
+        for (Selection selection : mine) {
+            ids.add(selection.getTopicId());
+        }
+        return ids;
     }
 
     private boolean selectedByMe(Long topicId, Long uid) {
@@ -328,33 +401,29 @@ public class TopicService {
         return count != null && count > 0;
     }
 
-    private TopicDtos.StudentTopicVO studentTopicVo(Topic topic, Long uid) {
-        int max = topic.getMaxSelectCount() == null ? 0 : topic.getMaxSelectCount();
+    private TopicDtos.StudentTopicVO studentTopicVo(Topic topic, int attachmentCount, boolean selectedByMe) {
         int selected = topic.getSelectedCount() == null ? 0 : topic.getSelectedCount();
         String description = topic.getDescription() == null ? "" : topic.getDescription();
         String summary = description.length() > 120 ? description.substring(0, 120) + "…" : description;
         return new TopicDtos.StudentTopicVO(String.valueOf(topic.getId()), topic.getTitle(), summary,
-                topic.getDifficulty(), json.stringList(topic.getTags()), max, selected,
-                Math.max(0, max - selected), selectedByMe(topic.getId(), uid));
+                topic.getDifficulty(), Difficulty.labelOf(topic.getDifficulty()), selected,
+                attachmentCount, selectedByMe);
     }
 
-    private TopicDtos.TopicListItemVO listItemVo(Topic topic) {
-        Long attachmentCount = attachmentMapper.selectCount(
-                new LambdaQueryWrapper<TopicAttachment>().eq(TopicAttachment::getTopicId, topic.getId()));
+    private TopicDtos.TopicListItemVO listItemVo(Topic topic, int attachmentCount) {
         return new TopicDtos.TopicListItemVO(String.valueOf(topic.getId()), topic.getTitle(),
-                topic.getDifficulty(), topic.getStatus(), topic.getMaxSelectCount(),
-                topic.getSelectedCount(), json.stringList(topic.getTags()),
-                attachmentCount == null ? 0 : attachmentCount.intValue(),
-                Times.offset(topic.getPublishedAt()), Times.offset(topic.getUpdatedAt()));
+                topic.getDifficulty(), Difficulty.labelOf(topic.getDifficulty()),
+                topic.getSelectedCount(), attachmentCount,
+                Times.offset(topic.getCreatedAt()), Times.offset(topic.getUpdatedAt()));
     }
 
     private TopicDtos.TopicVO toVo(Topic topic) {
+        List<TopicDtos.AttachmentVO> files = attachments(topic.getId());
         return new TopicDtos.TopicVO(String.valueOf(topic.getId()),
                 String.valueOf(topic.getOfferingId()), topic.getTitle(), topic.getDescription(),
-                topic.getRequirements(), topic.getDifficulty(), topic.getMaxSelectCount(),
-                topic.getSelectedCount(), json.stringList(topic.getTags()),
-                json.stringList(topic.getExpectedTech()), topic.getStatus(),
-                Times.offset(topic.getPublishedAt()), Times.offset(topic.getCreatedAt()),
-                Times.offset(topic.getUpdatedAt()), topic.getVersion(), attachments(topic.getId()));
+                topic.getDifficulty(), Difficulty.labelOf(topic.getDifficulty()),
+                topic.getSelectedCount(), files.size(),
+                Times.offset(topic.getCreatedAt()), Times.offset(topic.getUpdatedAt()),
+                topic.getVersion(), files);
     }
 }

@@ -8,50 +8,44 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
- * 题目契约，对应 TopicManageView / TopicSelectView。
+ * 题目契约，对应开课工作台的「题目」页签与学生选题页。
  *
- * <p>UI 的选题卡片需要 remaining 与 selectedByMe，这两个字段由 Service 结合
- * 当前学生的选题记录实时算出，不直接落库。</p>
+ * <p>题目只保留标题、描述、难度、附件四个业务字段：难度用稳定编码（EASY/MEDIUM/HARD），
+ * 展示名由后端字典下发；附件是 file_object 的引用，先上传拿 fileId 再挂到题目上。</p>
  */
 public final class TopicDtos {
 
     private TopicDtos() {
     }
 
+    /** 新建：标题、描述、难度、附件，仅此四项。 */
     public record TopicCreateRequest(
-            @NotBlank @Size(min = 2, max = 100) String title,
-            @NotBlank @Size(max = 5000) String description,
-            String requirements,
+            @NotBlank(message = "标题不能为空") @Size(min = 2, max = 100, message = "标题长度需在 2~100 字之间") String title,
+            @NotBlank(message = "题目描述不能为空") @Size(max = 5000, message = "题目描述不能超过 5000 字") String description,
             String difficulty,
-            Integer maxSelectCount,
-            List<String> tags,
-            List<String> expectedTech,
-            List<String> attachments,
-            String status) {
+            List<String> attachments) {
     }
 
+    /** 编辑：只改可改字段；状态、容量等概念已从模型中移除。 */
     public record TopicUpdateRequest(
             @NotNull(message = "version 不能为空") Integer version,
-            String title,
-            String description,
-            String requirements,
-            String difficulty,
-            Integer maxSelectCount,
-            List<String> tags,
-            List<String> expectedTech,
-            String status) {
+            @Size(min = 2, max = 100, message = "标题长度需在 2~100 字之间") String title,
+            @Size(max = 5000, message = "题目描述不能超过 5000 字") String description,
+            String difficulty) {
     }
 
-    public record PublishBatchRequest(@NotEmpty List<String> topicIds) {
+    /** 附件挂载 / 排序：fileIds 的顺序即展示顺序。 */
+    public record AttachmentIdsRequest(
+            @NotEmpty(message = "至少选择一个附件") List<String> fileIds) {
     }
 
-    public record PublishBatchResult(int published, List<Failed> failed) {
-    }
-
-    public record Failed(String topicId, String reason) {
-    }
-
-    public record AttachmentVO(String fileId, String filename, String downloadUrl) {
+    /** 附件视图：downloadUrl 走鉴权下载，contentType 供前端决定「内嵌预览」还是「仅下载」。 */
+    public record AttachmentVO(
+            String fileId,
+            String filename,
+            String contentType,
+            long size,
+            String downloadUrl) {
     }
 
     public record TopicVO(
@@ -59,14 +53,10 @@ public final class TopicDtos {
             String offeringId,
             String title,
             String description,
-            String requirements,
             String difficulty,
-            Integer maxSelectCount,
+            String difficultyLabel,
             Integer selectedCount,
-            List<String> tags,
-            List<String> expectedTech,
-            String status,
-            OffsetDateTime publishedAt,
+            Integer attachmentCount,
             OffsetDateTime createdAt,
             OffsetDateTime updatedAt,
             Integer version,
@@ -77,25 +67,22 @@ public final class TopicDtos {
             String id,
             String title,
             String difficulty,
-            String status,
-            Integer maxSelectCount,
+            String difficultyLabel,
             Integer selectedCount,
-            List<String> tags,
             int attachmentCount,
-            OffsetDateTime publishedAt,
+            OffsetDateTime createdAt,
             OffsetDateTime updatedAt) {
     }
 
-    /** TopicSelectView 卡片：id/title/summary/difficulty/tags/selected/max。 */
+    /** 学生选题卡片：不再有容量与剩余名额，只保留「已选人数」这一参考值。 */
     public record StudentTopicVO(
             String id,
             String title,
             String summary,
             String difficulty,
-            List<String> tags,
-            Integer maxSelectCount,
+            String difficultyLabel,
             Integer selectedCount,
-            Integer remaining,
+            int attachmentCount,
             boolean selectedByMe) {
     }
 
@@ -103,13 +90,14 @@ public final class TopicDtos {
             String id,
             String title,
             String description,
-            String requirements,
             String difficulty,
-            List<String> tags,
-            Integer maxSelectCount,
+            String difficultyLabel,
             Integer selectedCount,
-            Integer remaining,
             boolean selectedByMe,
             List<AttachmentVO> attachments) {
+    }
+
+    /** 难度字典项，供前端渲染筛选与下拉。 */
+    public record DifficultyVO(String code, String label, int sort) {
     }
 }

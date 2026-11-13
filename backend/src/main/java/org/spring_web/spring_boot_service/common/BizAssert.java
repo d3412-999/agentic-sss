@@ -58,4 +58,22 @@ public final class BizAssert {
             throw new BizException(ErrorCode.PARAM_INVALID, field + "必须是数字字符串");
         }
     }
+
+    /**
+     * 宽松解析：非法或为空返回 null，不抛异常。
+     *
+     * <p>只读校验场景用——前端可能带着过期/伪造的 id 来问「这个文件还在吗」，
+     * 回答「不在」比抛参数错误更符合语义，也避免前端把它当请求失败处理。</p>
+     */
+    public static Long parseIdOrNull(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            long value = Long.parseLong(raw.trim());
+            return value > 0 ? value : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
 }

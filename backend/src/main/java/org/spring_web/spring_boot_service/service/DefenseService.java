@@ -22,16 +22,20 @@ import lombok.extern.slf4j.Slf4j;
 import org.spring_web.spring_boot_service.client.AiServiceClient;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
+import org.spring_web.spring_boot_service.common.DefenseQuestionRule;
 import org.spring_web.spring_boot_service.common.ErrorCode;
 import org.spring_web.spring_boot_service.common.GradeMath;
 import org.spring_web.spring_boot_service.common.ScoreGuard;
 import org.spring_web.spring_boot_service.common.Times;
+import org.spring_web.spring_boot_service.config.SssProperties;
 import org.spring_web.spring_boot_service.dto.DefenseDtos;
 import org.spring_web.spring_boot_service.entity.Course;
+import org.spring_web.spring_boot_service.entity.CodeAnalysis;
 import org.spring_web.spring_boot_service.entity.DefenseAnswer;
 import org.spring_web.spring_boot_service.entity.DefenseQuestion;
 import org.spring_web.spring_boot_service.entity.DefenseSession;
 import org.spring_web.spring_boot_service.entity.FileObject;
+import org.spring_web.spring_boot_service.entity.Grade;
 import org.spring_web.spring_boot_service.entity.Offering;
 import org.spring_web.spring_boot_service.entity.Selection;
 import org.spring_web.spring_boot_service.entity.Submission;
@@ -39,10 +43,12 @@ import org.spring_web.spring_boot_service.entity.SubmissionVersion;
 import org.spring_web.spring_boot_service.entity.SysUser;
 import org.spring_web.spring_boot_service.entity.Topic;
 import org.spring_web.spring_boot_service.mapper.CourseMapper;
+import org.spring_web.spring_boot_service.mapper.CodeAnalysisMapper;
 import org.spring_web.spring_boot_service.mapper.DefenseAnswerMapper;
 import org.spring_web.spring_boot_service.mapper.DefenseQuestionMapper;
 import org.spring_web.spring_boot_service.mapper.DefenseSessionMapper;
 import org.spring_web.spring_boot_service.mapper.FileObjectMapper;
+import org.spring_web.spring_boot_service.mapper.GradeMapper;
 import org.spring_web.spring_boot_service.mapper.SelectionMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionVersionMapper;
@@ -108,10 +114,15 @@ public class DefenseService {
     private final SubmissionMapper submissionMapper;
     private final SubmissionVersionMapper versionMapper;
     private final FileObjectMapper fileObjectMapper;
+    private final CodeAnalysisMapper codeAnalysisMapper;
+    private final GradeMapper gradeMapper;
     private final FileStorageService fileStorage;
     private final AiServiceClient aiClient;
     private final NotificationService notificationService;
     private final OfferingService offeringService;
+    private final DefenseQuestionRule questionRule;
+    private final AuditLogService auditLogService;
+    private final SssProperties sssProperties;
     private final JsonCodec json;
     private final PlatformTransactionManager transactionManager;
 
@@ -124,6 +135,20 @@ public class DefenseService {
      * AI 失败（50301）时不会留下半个会话；落库阶段则要么全部成功、要么全部回滚。</p>
      */
     public DefenseDtos.SessionVO createSession(String selectionId, Integer questionCount) {
+        return createSession(selectionId, questionCount, null);
+    }
+
+    /**
+     * 教师为某个选题发起答辩：AI 出题 → 落题目与会话 → 选题置 DEFENDING → 通知学生。
+     *
+     * <p>题数不再由教师随手选：按源码评分命中分档（{@link DefenseQuestionRule}），
+     * 只有教师显式指定 {@code questionCount} 且与档位结果不同时才视为「覆盖」，必须带理由。</p>
+     *
+     * <p>AI 调用放在事务外、DB 落库放在 {@link TransactionTemplate} 里：
+     * AI 失败（50301）时不会留下半个会话；落库阶段则要么全部成功、要么全部回滚。</p>
+     */
+    public DefenseDtos.SessionVO createSession(String selectionId, Integer questionCount,
+                                               String overrideReason) {
         Long sid = BizAssert.id(selectionId, "selectionId");
         Selection selection = BizAssert.found(selectionMapper.selectById(sid), "选题");
         BizAssert.rule(!"CANCELED".equals(selection.getStatus()), "该选题已退选，不能发起答辩");
@@ -134,17 +159,34 @@ public class DefenseService {
                 .eq(DefenseSession::getStudentId, selection.getStudentId())
                 .in(DefenseSession::getStatus, ACTIVE_SESSION_STATUSES));
         BizAssert.state(active == null || active == 0, "该学生已有进行中的答辩会话，请先完成或结束");
+        // 与列表预检同一条规则：成绩已发布时默认不允许重开答辩（可配置放开）
+        BizAssert.state(sssProperties.getDefense().getBatch().isAllowWhenGradePublished()
+                || !gradePublished(selection), "该学生成绩已发布，请先撤回成绩再发起答辩");
 
-        int count = resolveQuestionCount(offering, questionCount);
-        Map<String, Object> payload = buildQuestionPayload(offering, selection, count);
+        BigDecimal codeScore = codeScoreOf(selection.getId());
+        DefenseQuestionRule.Plan plan = questionRule.plan(codeScore);
+        int count = plan.total();
+        String reason = null;
+        if (questionCount != null && questionCount != plan.total()) {
+            BizAssert.param(questionCount >= 1 && questionCount <= 12, "答辩题目数量需在 1~12 之间");
+            BizAssert.param(StringUtils.hasText(overrideReason), "手动指定题数必须填写理由");
+            count = questionCount;
+            reason = overrideReason.trim();
+        }
+
+        Map<String, Object> payload = buildQuestionPayload(offering, selection, count, plan);
         // AI 失败由 AiServiceClient 统一抛 50301：此时还没有任何写入，直接透传即可
         Map<String, Object> response = aiClient.generateDefenseQuestions(payload);
-        List<GeneratedQuestion> generated = parseQuestions(response, offering);
+        List<GeneratedQuestion> generated = parseQuestions(response, offering, count, plan);
         if (generated.isEmpty()) {
             throw new BizException(ErrorCode.AI_UNAVAILABLE, "AI 未返回答辩题目，请稍后重试");
         }
+        DefenseQuestionRule.Plan finalPlan = plan;
+        String finalReason = reason;
+        int finalCount = count;
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
-        return tx.execute(status -> persistSession(offering, selection, generated));
+        return tx.execute(status -> persistSession(offering, selection, generated,
+                finalPlan, codeScore, finalCount, finalReason));
     }
 
     /** 教师端会话列表：按创建时间倒序，带学生信息与作答进度；题目明细留到详情接口。 */
@@ -193,6 +235,10 @@ public class DefenseService {
             SysUser student = students.get(selection.getStudentId());
             Topic topic = topics.get(selection.getTopicId());
             DefenseSession session = sessionsBySelection.get(selection.getId());
+            BigDecimal codeScore = codeScoreOf(selection.getId());
+            DefenseQuestionRule.Plan plan = questionRule.plan(codeScore);
+            // 预检在列表层就给出结论：前端勾选前就能看到「谁能发起、谁不能、为什么」
+            String ineligible = ineligibleReason(selection, session);
             result.add(new DefenseDtos.CandidateVO(
                     String.valueOf(selection.getId()),
                     student == null || student.getStudentNo() == null ? "" : student.getStudentNo(),
@@ -201,9 +247,90 @@ public class DefenseService {
                     topic == null || topic.getTitle() == null ? "" : topic.getTitle(),
                     selection.getStatus(),
                     session == null ? null : String.valueOf(session.getId()),
-                    session == null ? null : session.getStatus()));
+                    session == null ? null : session.getStatus(),
+                    codeScore,
+                    plan.total(),
+                    plan.bonusCount(),
+                    ineligible == null,
+                    ineligible));
         }
         return result;
+    }
+
+    /**
+     * 发起资格预检：返回 null 表示可以发起，否则返回给学生 / 教师看的原因。
+     *
+     * <p>规则与 {@link #createSession} 内的校验刻意重叠：列表里的预检只是「提前告知」，
+     * 真正拦截仍以创建时的校验为准（会话可能在两次请求之间被别人创建）。</p>
+     */
+    public String precheck(Selection selection, DefenseSession session) {
+        return ineligibleReason(selection, session);
+    }
+
+    /** 某开课下「选题 → 最新会话」索引；批量预检时查一次即可，避免 N 次查询。 */
+    public Map<Long, DefenseSession> sessionsIndex(Long offeringId) {
+        return sessionsBySelection(offeringId);
+    }
+
+    private String ineligibleReason(Selection selection, DefenseSession session) {
+        if ("CANCELED".equals(selection.getStatus())) {
+            return "已退选";
+        }
+        if (session != null && ACTIVE_SESSION_STATUSES.contains(session.getStatus())) {
+            return "已有进行中的答辩";
+        }
+        // 成绩已发布默认不允许再发起：重开会话会让已发布的分数与答辩记录脱节。
+        // 需要给个别学生重答时，把 sss.defense.batch.allow-when-grade-published 打开。
+        if (!sssProperties.getDefense().getBatch().isAllowWhenGradePublished()
+                && gradePublished(selection)) {
+            return "成绩已发布，需先撤回成绩";
+        }
+        Submission source = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
+                .eq(Submission::getSelectionId, selection.getId())
+                .eq(Submission::getType, "SOURCE")
+                .last("limit 1"));
+        if (source == null || source.getLatestVersionId() == null) {
+            return "未提交源码";
+        }
+        CodeAnalysis analysis = codeAnalysisMapper.selectOne(new LambdaQueryWrapper<CodeAnalysis>()
+                .eq(CodeAnalysis::getSubmissionId, source.getId()).last("limit 1"));
+        if (analysis == null) {
+            return "源码评审尚未开始";
+        }
+        if ("FAILED".equals(analysis.getStatus())) {
+            return "源码评审失败，请先重新评审";
+        }
+        if (!"SUCCEEDED".equals(analysis.getStatus())) {
+            return "源码评审进行中";
+        }
+        return null;
+    }
+
+    /** 该选题的成绩是否已发布（有 published_at 即视为已发布，与成绩列表的「已发布」口径一致）。 */
+    private boolean gradePublished(Selection selection) {
+        if (selection == null || selection.getOfferingId() == null || selection.getStudentId() == null) {
+            return false;
+        }
+        Grade grade = gradeMapper.selectOne(new LambdaQueryWrapper<Grade>()
+                .eq(Grade::getOfferingId, selection.getOfferingId())
+                .eq(Grade::getStudentId, selection.getStudentId())
+                .last("limit 1"));
+        return grade != null && grade.getPublishedAt() != null;
+    }
+
+    /** 源码分：取最新 SOURCE 提交的 code_analysis；未评 / 失败返回 null（按 0 分档）。 */
+    private BigDecimal codeScoreOf(Long selectionId) {
+        Submission source = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
+                .eq(Submission::getSelectionId, selectionId)
+                .eq(Submission::getType, "SOURCE")
+                .last("limit 1"));
+        if (source == null) {
+            return null;
+        }
+        CodeAnalysis analysis = codeAnalysisMapper.selectOne(new LambdaQueryWrapper<CodeAnalysis>()
+                .eq(CodeAnalysis::getSubmissionId, source.getId()).last("limit 1"));
+        return analysis == null || !"SUCCEEDED".equals(analysis.getStatus())
+                ? null : analysis.getScore();
     }
 
     // ---------------------------------------------------------------- 会话详情 / 开始 / 结束
@@ -456,11 +583,17 @@ public class DefenseService {
         }
 
         LocalDateTime now = Times.now();
+        PrincipleOutcome outcome = applyEvaluation(session, questions, answers, response, now);
         session.setScore(score);
         session.setGrade(grade);
         session.setSummary(summary);
         session.setStatus("EVALUATED");
         session.setEvaluatedAt(now);
+        session.setAiDependent(outcome.aiDependent() == null ? null : (outcome.aiDependent() ? 1 : 0));
+        session.setPrincipleResult(json.write(outcome.principles()));
+        session.setBonusResult(outcome.bonusResult());
+        session.setBonusScore(outcome.bonusScore());
+        session.setBonusComment(outcome.bonusComment());
         session.setUpdatedAt(now);
         updateSession(session);
 
@@ -469,7 +602,285 @@ public class DefenseService {
         return new DefenseDtos.EvaluateResultVO(score, grade, summary);
     }
 
+    // ---------------------------------------------------------------- 题数规则 / 判定覆盖
+
+    /** 题数规则与阈值：前端「发起前预览」与「规则说明」共用这一份，避免两边各写一套。 */
+    public DefenseDtos.QuestionRuleVO questionRule() {
+        SssProperties.QuestionRule config = sssProperties.getDefense().getQuestionRule();
+        SssProperties.Batch batch = sssProperties.getDefense().getBatch();
+        List<DefenseDtos.TierVO> tiers = new ArrayList<>();
+        for (SssProperties.Tier tier : config.getTiers()) {
+            tiers.add(new DefenseDtos.TierVO(tier.getCode(), tier.getMin(), tier.getMax(), tier.getAdd()));
+        }
+        return new DefenseDtos.QuestionRuleVO(
+                config.getBaseCount(),
+                config.getMaxCount(),
+                config.getBonusCount(),
+                config.getBonusMaxAnswerSeconds(),
+                config.isBonusSkippable(),
+                tiers,
+                questionRule.passThreshold(),
+                questionRule.dimensions(),
+                questionRule.failCountForAiDependent(),
+                new ArrayList<>(config.getBaseMix()),
+                new ArrayList<>(config.getHighTierMix()),
+                batch.getMaxStudents(),
+                batch.getConcurrency(),
+                batch.isAllowWhenGradePublished());
+    }
+
+    /**
+     * 教师覆盖「完全依赖 AI」判定：理由必填、只留痕，不做二次审批。
+     *
+     * <p>原始判定保存在 {@code principle_result} 里不被覆盖，
+     * 所以任何时候都能回看「AI 判了什么、教师改成了什么、为什么改」。</p>
+     */
+    public DefenseDtos.OverrideAiDependentVO overrideAiDependent(
+            String sessionId, DefenseDtos.OverrideAiDependentRequest request) {
+        DefenseSession session = loadSession(sessionId);
+        offeringService.ownedOffering(String.valueOf(session.getOfferingId()));
+        BizAssert.param(request != null && request.aiDependent() != null, "请选择覆盖后的判定结果");
+        int minLength = sssProperties.getDefense().getPrinciple().getOverrideReasonMinLength();
+        String reason = request.reason() == null ? "" : request.reason().trim();
+        BizAssert.param(reason.length() >= minLength, "覆盖判定必须填写理由（至少 " + minLength + " 个字）");
+        // 只要已经评过分就允许覆盖：历史会话没有三原则判定（ai_dependent 为 NULL），
+        // 教师同样可以补一个结论，覆盖记录里会带上理由与操作人。
+        BizAssert.state(session.getScore() != null || "EVALUATED".equals(session.getStatus()),
+                "该答辩尚未评分，没有可覆盖的判定");
+
+        // 历史会话没有原判定（NULL），审计里保留 null 而不是伪造成 false
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("aiDependent", session.getAiDependent() == null ? null : Integer.valueOf(1).equals(session.getAiDependent()));
+        LocalDateTime now = Times.now();
+        session.setAiDependent(request.aiDependent() ? 1 : 0);
+        session.setAiDependentOverridden(1);
+        session.setOverrideReason(reason);
+        session.setOverrideBy(SecurityUtils.userId());
+        session.setOverrideAt(now);
+        session.setUpdatedAt(now);
+        updateSession(session);
+
+        auditLogService.record("DEFENSE_AI_DEPENDENT_OVERRIDE", "DEFENSE_SESSION", session.getId(),
+                before, Map.of("aiDependent", request.aiDependent()), reason);
+        return new DefenseDtos.OverrideAiDependentVO(String.valueOf(session.getId()),
+                request.aiDependent(), true, reason, Times.offset(now));
+    }
+
     // ---------------------------------------------------------------- 学生端
+
+    /**
+     * 把 AI 评分结果落到「单题分 / 单原则结论 / 加分题结果」。
+     *
+     * <p><b>判定在服务端算，不采信 AI 的结论</b>：AI 只给每题分数与证据，
+     * 「P1/P2/P3 哪项不通过、是否 AI_DEPENDENT」由阈值配置在这里推导。
+     * 这样换模型、换提示词都不会改变判定口径，也避免模型直接输出一个「完全依赖 AI」的标签
+     * 而无法解释依据。</p>
+     *
+     * <p>维度分取该维度所有题的<b>平均分</b>（未作答按 0 计），passed = 平均分 ≥ 阈值；
+     * 只有实际出过题的维度才参与判定，历史会话（dimension 为空）整体跳过。</p>
+     */
+    private PrincipleOutcome applyEvaluation(DefenseSession session, List<DefenseQuestion> questions,
+                                             Map<Long, DefenseAnswer> answers,
+                                             Map<String, Object> response, LocalDateTime now) {
+        Map<Long, Map<String, Object>> scored = questionScores(response);
+        int threshold = questionRule.passThreshold();
+        Map<String, List<BigDecimal>> byDimension = new LinkedHashMap<>();
+        for (String dimension : questionRule.dimensions()) {
+            byDimension.put(dimension, new ArrayList<>());
+        }
+
+        DefenseQuestion bonusQuestion = null;
+        BigDecimal bonusScore = null;
+        String bonusComment = null;
+        boolean bonusAnswered = false;
+
+        for (DefenseQuestion question : questions) {
+            Map<String, Object> item = scored.get(question.getId());
+            DefenseAnswer answer = answers.get(question.getId());
+            BigDecimal raw = item == null ? null : ScoreGuard.parse(item.get("score"));
+            BigDecimal effective = raw == null ? BigDecimal.ZERO : clampScore(raw);
+            boolean answered = answer != null && StringUtils.hasText(answer.getTranscript());
+
+            if (Integer.valueOf(1).equals(question.getIsBonus())) {
+                bonusQuestion = question;
+                bonusScore = raw == null ? null : effective;
+                bonusComment = item == null ? null : stringValue(item.get("comment"));
+                bonusAnswered = answered;
+                persistAnswerScore(answer, effective, null, evidenceOf(item, answer), bonusComment, now);
+                continue;
+            }
+
+            if (answer != null) {
+                persistAnswerScore(answer, effective,
+                        effective.compareTo(BigDecimal.valueOf(threshold)) >= 0,
+                        evidenceOf(item, answer),
+                        item == null ? null : stringValue(item.get("comment")), now);
+            }
+            if (StringUtils.hasText(question.getDimension())) {
+                byDimension.computeIfAbsent(question.getDimension(), key -> new ArrayList<>())
+                        .add(effective);
+            }
+        }
+
+        List<DefenseDtos.PrincipleResultVO> principles = new ArrayList<>();
+        int judged = 0;
+        int failed = 0;
+        for (Map.Entry<String, List<BigDecimal>> entry : byDimension.entrySet()) {
+            List<BigDecimal> values = entry.getValue();
+            if (values.isEmpty()) {
+                continue;
+            }
+            judged++;
+            BigDecimal sum = values.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal avg = sum.divide(BigDecimal.valueOf(values.size()), 1, RoundingMode.HALF_UP);
+            boolean passed = avg.compareTo(BigDecimal.valueOf(threshold)) >= 0;
+            if (!passed) {
+                failed++;
+            }
+            int passCount = (int) values.stream()
+                    .filter(v -> v.compareTo(BigDecimal.valueOf(threshold)) >= 0).count();
+            principles.add(new DefenseDtos.PrincipleResultVO(
+                    entry.getKey(), dimensionLabel(entry.getKey()), avg, passed,
+                    evidenceSummary(entry.getKey(), avg, values.size(), passCount, threshold),
+                    passCount, values.size()));
+        }
+
+        Boolean aiDependent = judged == 0 ? null : failed >= questionRule.failCountForAiDependent();
+
+        String bonusResult = null;
+        if (bonusQuestion != null) {
+            bonusResult = !bonusAnswered ? "UNANSWERED"
+                    : (bonusScore != null && bonusScore.compareTo(BigDecimal.valueOf(threshold)) >= 0
+                    ? "CORRECT" : "WRONG");
+        }
+        return new PrincipleOutcome(principles, aiDependent, bonusResult, bonusScore, bonusComment);
+    }
+
+    /** AI 评分响应里的单题分：兼容 camelCase / snake_case。 */
+    private Map<Long, Map<String, Object>> questionScores(Map<String, Object> response) {
+        Map<Long, Map<String, Object>> result = new HashMap<>();
+        Object raw = response.get("questionScores");
+        if (raw == null) {
+            raw = response.get("question_scores");
+        }
+        if (!(raw instanceof List<?> list)) {
+            return result;
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+            Object id = map.get("questionId") != null ? map.get("questionId") : map.get("question_id");
+            BigDecimal value = ScoreGuard.parse(id);
+            if (value == null) {
+                continue;
+            }
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                normalized.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            result.put(value.longValue(), normalized);
+        }
+        return result;
+    }
+
+    /** 单题结果写回作答记录；没有作答记录（学生跳过且未落库）时不补造。 */
+    private void persistAnswerScore(DefenseAnswer answer, BigDecimal score, Boolean passed,
+                                    String evidence, String comment, LocalDateTime now) {
+        if (answer == null) {
+            return;
+        }
+        answer.setScore(score);
+        answer.setPassed(passed == null ? null : (passed ? 1 : 0));
+        answer.setEvidence(evidence);
+        answer.setComment(comment);
+        answer.setUpdatedAt(now);
+        answerMapper.updateById(answer);
+    }
+
+    /** 判定证据：优先用 AI 给的 evidence 片段，缺省时截一段转写，保证复核时有据可查。 */
+    private String evidenceOf(Map<String, Object> item, DefenseAnswer answer) {
+        String evidence = item == null ? null : stringValue(item.get("evidence"));
+        if (StringUtils.hasText(evidence)) {
+            return clip(evidence, 400);
+        }
+        if (answer != null && StringUtils.hasText(answer.getTranscript())) {
+            return clip(answer.getTranscript(), 400);
+        }
+        return null;
+    }
+
+    /** 判定依据写清「平均分 / 阈值 / 达标题数」，教师一眼能看出为什么通过或不通过。 */
+    private String evidenceSummary(String dimension, BigDecimal avg, int total,
+                                   int passCount, int threshold) {
+        return dimensionLabel(dimension) + "：平均 " + avg.stripTrailingZeros().toPlainString()
+                + " 分（阈值 " + threshold + "），" + total + " 题中 " + passCount
+                + " 题单题达标 → " + (avg.compareTo(BigDecimal.valueOf(threshold)) >= 0
+                ? "该维度判定通过" : "该维度判定未通过");
+    }
+
+    private String dimensionLabel(String dimension) {
+        return switch (dimension == null ? "" : dimension) {
+            case DefenseQuestionRule.P1 -> "复述设计";
+            case DefenseQuestionRule.P2 -> "解释修改理由";
+            case DefenseQuestionRule.P3 -> "现场改动";
+            case DefenseQuestionRule.BONUS -> "加分题";
+            default -> "未分维度";
+        };
+    }
+
+    private BigDecimal clampScore(BigDecimal value) {
+        if (value.compareTo(BigDecimal.ZERO) < 0) {
+            return BigDecimal.ZERO.setScale(1);
+        }
+        if (value.compareTo(BigDecimal.valueOf(100)) > 0) {
+            return BigDecimal.valueOf(100).setScale(1);
+        }
+        return value.setScale(1, RoundingMode.HALF_UP);
+    }
+
+    /** 一次评分的判定产物。 */
+    private record PrincipleOutcome(List<DefenseDtos.PrincipleResultVO> principles,
+                                    Boolean aiDependent, String bonusResult,
+                                    BigDecimal bonusScore, String bonusComment) {
+    }
+
+    /**
+     * 学生跳过加分题：只允许对加分题操作，且只允许在 IN_PROGRESS。
+     *
+     * <p>记成 {@code SKIPPED} 而不是删除：教师端要能看到「这题学生主动跳过了」，
+     * 而不是「系统没收到」。计分题不允许跳过，否则会被当成逃题。</p>
+     */
+    public DefenseDtos.QuestionVO skipBonus(String sessionId, String questionId) {
+        DefenseSession session = loadSession(sessionId);
+        assertVisible(session);
+        BizAssert.rule("IN_PROGRESS".equals(session.getStatus()), "答辩未开始或已结束，不能跳过");
+        Long qid = BizAssert.id(questionId, "questionId");
+        DefenseQuestion question = BizAssert.found(questionMapper.selectById(qid), "答辩题目");
+        BizAssert.param(question.getDefenseId().equals(session.getId()), "题目不属于该答辩会话");
+        BizAssert.param(Integer.valueOf(1).equals(question.getIsBonus()), "只有加分题可以跳过");
+
+        DefenseAnswer answer = answerMapper.selectOne(new LambdaQueryWrapper<DefenseAnswer>()
+                .eq(DefenseAnswer::getQuestionId, qid).last("limit 1"));
+        LocalDateTime now = Times.now();
+        if (answer == null) {
+            answer = new DefenseAnswer();
+            answer.setDefenseId(session.getId());
+            answer.setQuestionId(qid);
+            answer.setCreatedAt(now);
+        }
+        answer.setSkipped(1);
+        answer.setStatus("SKIPPED");
+        answer.setTranscript(null);
+        answer.setAnsweredAt(now);
+        answer.setUpdatedAt(now);
+        if (answer.getId() == null) {
+            answerMapper.insert(answer);
+        } else {
+            answerMapper.updateById(answer);
+        }
+        return toQuestionVo(question, answer, isOfferingOwner(session));
+    }
 
     /** 学生按选题查自己的答辩会话；没有会话返回 40401，前端据此隐藏「进入答辩」入口。 */
     public DefenseDtos.SessionVO studentSession(String selectionId) {
@@ -500,27 +911,36 @@ public class DefenseService {
         return count;
     }
 
-    /** 按 AI 服务 21.1 契约组装出题请求：开课 + 选题 + 报告正文（源码材料本轮缺省）。 */
-    private Map<String, Object> buildQuestionPayload(Offering offering, Selection selection, int count) {
-        Course course = courseMapper.selectById(offering.getCourseId());
+    /**
+     * 按 AI 服务 21.1 契约组装出题请求：开课 + 选题 + 报告正文（源码材料本轮缺省）。
+     *
+     * <p>V13 起额外下发三原则维度、难度配比与加分题要求；AI 侧必须按维度出题，
+     * 但题干里不得出现「第几原则」这类字眼（提示词里已约束）。</p>
+     */
+    private Map<String, Object> buildQuestionPayload(Offering offering, Selection selection,
+                                                     int count, DefenseQuestionRule.Plan plan) {
+        Course course = offering.getCourseId() == null ? null : courseMapper.selectById(offering.getCourseId());
         Topic topic = selection.getTopicId() == null ? null : topicMapper.selectById(selection.getTopicId());
 
         Map<String, Object> topicBrief = new LinkedHashMap<>();
         topicBrief.put("topicId", String.valueOf(selection.getTopicId()));
         topicBrief.put("title", topic == null ? "" : nullSafe(topic.getTitle()));
-        topicBrief.put("requirements", topic == null ? "" : nullSafe(topic.getRequirements()));
+        // V9 起题目不再有「交付要求 / 期望技术栈」，AI 侧 schema 里这两个字段有默认空值，
+        // 这里直接不下发，避免用空串覆盖提示词里的「未填写」分支
         topicBrief.put("difficulty", topic == null || !StringUtils.hasText(topic.getDifficulty())
                 ? DEFAULT_DIFFICULTY : topic.getDifficulty());
-        if (topic != null) {
-            // AI 侧 schema 暂无该字段（extra=ignore），保留是为了提示词后续能用到「期望技术栈」
-            topicBrief.put("expectedTech", json.stringList(topic.getExpectedTech()));
-        }
 
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("questionCount", count);
         config.put("focus", List.of());
         config.put("language", StringUtils.hasText(offering.getLanguage())
                 ? offering.getLanguage() : DEFAULT_LANGUAGE);
+        config.put("dimensions", questionRule.dimensions());
+        config.put("dimensionBriefs", questionRule.dimensionBriefs());
+        config.put("difficultyMix", Map.of(
+                "EASY", plan.easy(), "MEDIUM", plan.medium(), "HARD", plan.hard()));
+        config.put("bonusCount", plan.bonusCount());
+        config.put("bonusMaxAnswerSeconds", plan.bonusSeconds());
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("requestId", "defense-" + selection.getId());
@@ -565,15 +985,27 @@ public class DefenseService {
         return reportMaterial;
     }
 
-    /** 解析 AI 出的题；非法题（空题干）直接跳过，全部为空时由调用方抛 50301。 */
-    private List<GeneratedQuestion> parseQuestions(Map<String, Object> response, Offering offering) {
+    /**
+     * 解析 AI 出的题：跳过空题干；分离计分题与加分题，并保证维度覆盖。
+     *
+     * <p>维度兜底：AI 偶尔会漏掉 {@code dimension} 字段。此时按 P1→P2→P3 轮流补齐
+     * （题数 ≥ 6 时每个维度至少 2 题），而不是留空——留空会让判定链路直接失效，
+     * 而且教师端看到的「未分维度」会被误认为功能没生效。</p>
+     *
+     * <p>加分题缺失不伪造：只记录实际数量并在返回里体现，前端会显示「本次未生成加分题」。
+     * 用一道普通题冒充加分题会污染总分口径，这是绝对不能做的。</p>
+     */
+    private List<GeneratedQuestion> parseQuestions(Map<String, Object> response, Offering offering,
+                                                   int count, DefenseQuestionRule.Plan plan) {
         Object raw = response.get("questions");
         if (!(raw instanceof List<?> list)) {
             return List.of();
         }
         int maxAnswerSeconds = offering.getMaxAnswerSeconds() == null
                 ? DEFAULT_ANSWER_SECONDS : offering.getMaxAnswerSeconds();
-        List<GeneratedQuestion> result = new ArrayList<>();
+        List<String> dimensions = questionRule.dimensions();
+        List<GeneratedQuestion> scored = new ArrayList<>();
+        List<GeneratedQuestion> bonus = new ArrayList<>();
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> map)) {
                 continue;
@@ -582,16 +1014,46 @@ public class DefenseService {
             if (!StringUtils.hasText(question)) {
                 continue;
             }
-            result.add(new GeneratedQuestion(
+            boolean isBonus = Boolean.TRUE.equals(map.get("bonus"))
+                    || DefenseQuestionRule.BONUS.equalsIgnoreCase(stringValue(map.get("dimension")));
+            String dimension = isBonus ? DefenseQuestionRule.BONUS
+                    : normalizeDimension(stringValue(map.get("dimension")));
+            GeneratedQuestion generated = new GeneratedQuestion(
                     normalizeType(stringValue(map.get("type"))),
                     normalizeDifficulty(stringValue(map.get("difficulty"))),
                     question.trim(),
                     stringList(map.get("expectedPoints")),
                     stringValue(map.get("referenceAnswer")),
                     map.get("sourceRefs"),
-                    maxAnswerSeconds));
+                    isBonus ? plan.bonusSeconds() : maxAnswerSeconds,
+                    dimension,
+                    isBonus);
+            if (isBonus) {
+                if (bonus.size() < Math.max(1, plan.bonusCount())) {
+                    bonus.add(generated);
+                }
+            } else if (scored.size() < count) {
+                scored.add(generated);
+            }
         }
+        // 维度兜底：按顺序补全，保证 P1/P2/P3 都有题
+        List<GeneratedQuestion> result = new ArrayList<>();
+        for (int i = 0; i < scored.size(); i++) {
+            GeneratedQuestion item = scored.get(i);
+            String dimension = item.dimension();
+            if (dimension == null) {
+                dimension = dimensions.get(i % dimensions.size());
+            }
+            result.add(new GeneratedQuestion(item.type(), item.difficulty(), item.question(),
+                    item.expectedPoints(), item.referenceAnswer(), item.sourceRefs(),
+                    item.maxAnswerSeconds(), dimension, false));
+        }
+        result.addAll(bonus);
         return result;
+    }
+
+    private String normalizeDimension(String dimension) {
+        return dimension != null && questionRule.isDimension(dimension) ? dimension : null;
     }
 
     private String normalizeType(String type) {
@@ -606,15 +1068,25 @@ public class DefenseService {
 
     /** 事务内落会话 + 题目 + 选题状态 + 学生通知；返回教师视图（含评分要点/参考答案）。 */
     private DefenseDtos.SessionVO persistSession(Offering offering, Selection selection,
-                                                 List<GeneratedQuestion> generated) {
+                                                 List<GeneratedQuestion> generated,
+                                                 DefenseQuestionRule.Plan plan,
+                                                 BigDecimal codeScore, int scoredCount,
+                                                 String overrideReason) {
         LocalDateTime now = Times.now();
+        int bonusCount = (int) generated.stream().filter(GeneratedQuestion::bonus).count();
         DefenseSession session = new DefenseSession();
         session.setOfferingId(offering.getId());
         session.setStudentId(selection.getStudentId());
         session.setMode("PER_STUDENT");
         session.setStatus("READY");
         session.setSelectionIds(json.write(List.of(String.valueOf(selection.getId()))));
-        session.setQuestionCount(generated.size());
+        // question_count 只统计计分题：加分题单独计数，成绩计算不读它
+        session.setQuestionCount(scoredCount);
+        session.setCodeScoreSnapshot(codeScore);
+        session.setQuestionRuleTier(plan.tier());
+        session.setDifficultyMix(plan.difficultyMixSnapshot());
+        session.setQuestionOverrideReason(overrideReason);
+        session.setBonusQuestionCount(bonusCount);
         session.setResetCount(0);
         session.setVersion(0);
         session.setCreatedAt(now);
@@ -634,6 +1106,8 @@ public class DefenseService {
             question.setReferenceAnswer(item.referenceAnswer());
             question.setSourceRefs(item.sourceRefs() == null ? null : json.write(item.sourceRefs()));
             question.setMaxAnswerSeconds(item.maxAnswerSeconds());
+            question.setDimension(item.dimension());
+            question.setIsBonus(item.bonus() ? 1 : 0);
             question.setCreatedAt(now);
             questionMapper.insert(question);
             questionVos.add(toQuestionVo(question, null, true));
@@ -665,6 +1139,8 @@ public class DefenseService {
             item.put("id", String.valueOf(question.getId()));
             item.put("question", question.getQuestion());
             item.put("expectedPoints", json.stringList(question.getExpectedPoints()));
+            item.put("dimension", question.getDimension());
+            item.put("bonus", Integer.valueOf(1).equals(question.getIsBonus()));
             questionItems.add(item);
 
             DefenseAnswer answer = answers.get(question.getId());
@@ -832,7 +1308,19 @@ public class DefenseService {
                 session.getVideoFileId() == null ? null : String.valueOf(session.getVideoFileId()),
                 session.getVideoDurationMs(),
                 session.getVideoSizeBytes(),
-                session.getVideoFileId() != null);
+                session.getVideoFileId() != null,
+                session.getCodeScoreSnapshot(),
+                session.getQuestionRuleTier(),
+                session.getDifficultyMix(),
+                session.getBonusQuestionCount(),
+                session.getAiDependent() == null ? null : Integer.valueOf(1).equals(session.getAiDependent()),
+                json.object(session.getPrincipleResult()),
+                Integer.valueOf(1).equals(session.getAiDependentOverridden()),
+                session.getOverrideReason(),
+                Times.offset(session.getOverrideAt()),
+                session.getBonusResult(),
+                session.getBonusScore(),
+                session.getBonusComment());
     }
 
     private List<DefenseDtos.QuestionVO> questionVos(DefenseSession session, boolean teacher) {
@@ -864,7 +1352,14 @@ public class DefenseService {
                 question.getMaxAnswerSeconds(),
                 answer == null ? null : answer.getStatus(),
                 answer == null ? null : answer.getTranscript(),
-                answer == null ? null : answer.getDurationMs());
+                answer == null ? null : answer.getDurationMs(),
+                question.getDimension(),
+                Integer.valueOf(1).equals(question.getIsBonus()),
+                answer == null ? null : answer.getScore(),
+                answer == null || answer.getPassed() == null ? null : Integer.valueOf(1).equals(answer.getPassed()),
+                answer == null ? null : answer.getEvidence(),
+                answer == null ? null : answer.getComment(),
+                answer != null && Integer.valueOf(1).equals(answer.getSkipped()));
     }
 
     // ---------------------------------------------------------------- 批量查询 / 小工具
@@ -1000,6 +1495,8 @@ public class DefenseService {
             List<String> expectedPoints,
             String referenceAnswer,
             Object sourceRefs,
-            int maxAnswerSeconds) {
+            int maxAnswerSeconds,
+            String dimension,
+            boolean bonus) {
     }
 }

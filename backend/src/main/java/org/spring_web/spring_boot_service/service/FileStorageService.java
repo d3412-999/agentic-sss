@@ -16,6 +16,7 @@ import java.util.HexFormat;
 import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.spring_web.spring_boot_service.common.BizAssert;
 import org.spring_web.spring_boot_service.common.BizException;
 import org.spring_web.spring_boot_service.common.ErrorCode;
@@ -26,19 +27,22 @@ import org.spring_web.spring_boot_service.entity.FileObject;
 import org.spring_web.spring_boot_service.mapper.FileObjectMapper;
 import org.spring_web.spring_boot_service.security.SecurityUtils;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
  * 本地文件存储（MinIO / OSS 预留）。
  *
- * <p>三个要点：</p>
+ * <p>四个要点：</p>
  * <ol>
- *   <li>SHA-256 命中已有文件直接复用，实现「秒传」且不重复占磁盘；</li>
+ *   <li>SHA-256 命中同一上传者、同一用途的已有文件直接复用，实现「秒传」且不重复占磁盘；
+ *       去重范围必须带上 bucket + created_by，否则会把别人的文件「借用」过来，后续鉴权直接错乱；</li>
  *   <li>objectKey 由服务端生成 UUID，绝不使用用户上传的文件名做路径，杜绝路径穿越；</li>
- *   <li>读取时再次 normalize 并校验前缀，即使数据库被写入脏 objectKey 也逃不出 root。</li>
+ *   <li>读取时再次 normalize 并校验前缀，即使数据库被写入脏 objectKey 也逃不出 root；</li>
+ *   <li>先落盘再入库，入库失败立刻删掉刚落盘的文件，避免留下孤儿文件。</li>
  * </ol>
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class FileStorageService {
@@ -63,47 +67,15 @@ public class FileStorageService {
                 ? Paths.get(file.getOriginalFilename()).getFileName().toString() : "upload.bin";
         BizAssert.param(!filename.contains("..") && !filename.contains("/") && !filename.contains("\\"),
                 "文件名不合法");
+        return persist(file, filename, file.getContentType(), purpose, expectedSha256);
+    }
 
-        String sha256;
-        try (InputStream in = file.getInputStream()) {
-            sha256 = sha256(in);
-        } catch (IOException ex) {
-            throw new BizException(ErrorCode.FILE_INVALID, "读取上传文件失败");
-        }
-        if (StringUtils.hasText(expectedSha256) && !expectedSha256.equalsIgnoreCase(sha256)) {
-            throw new BizException(ErrorCode.FILE_INVALID, "文件 SHA-256 校验失败");
-        }
-        FileObject existing = fileObjectMapper.selectOne(new LambdaQueryWrapper<FileObject>()
-                .eq(FileObject::getSha256, sha256).last("limit 1"));
-        if (existing != null && locate(existing) != null) {
-            return existing;
-        }
-
-        String objectKey = LocalDate.now(Times.BUSINESS_ZONE).format(DIR)
-                + "/" + UUID.randomUUID() + "-" + filename;
-        Path target = safeResolve(objectKey);
-        try {
-            Files.createDirectories(target.getParent());
-            try (InputStream in = file.getInputStream()) {
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException ex) {
-            throw new BizException(ErrorCode.INTERNAL_ERROR, "保存文件失败");
-        }
-
-        FileObject object = new FileObject();
-        object.setStorage("LOCAL");
-        object.setBucket(purpose);
-        object.setObjectKey(objectKey);
-        object.setFilename(filename);
-        object.setContentType(file.getContentType());
-        object.setSizeBytes(file.getSize());
-        object.setSha256(sha256);
-        object.setCreatedBy(SecurityUtils.userId());
-        object.setCreatedAt(Times.now());
-        object.setUpdatedAt(Times.now());
-        fileObjectMapper.insert(object);
-        return object;
+    /**
+     * 题目附件专用入口：文件名与 contentType 已在 {@link FileTypeValidator} 里清洗、归一，
+     * 这里只负责去重、流式落盘与入库。
+     */
+    public FileObject storeValidated(MultipartFile file, FileTypeValidator.Validated validated, String purpose) {
+        return persist(file, validated.filename(), validated.contentType(), purpose, null);
     }
 
     /**
@@ -145,10 +117,105 @@ public class FileStorageService {
         return BizAssert.found(fileObjectMapper.selectById(BizAssert.id(fileId, "fileId")), "文件");
     }
 
+    /**
+     * 查不到（含逻辑删除、id 非法）时返回 null，不抛异常。
+     *
+     * <p>给「本地记录是否还有效」这类只读校验用：记录失效是正常结果，不是错误。</p>
+     */
+    public FileObject loadOrNull(String fileId) {
+        Long id = BizAssert.parseIdOrNull(fileId);
+        return id == null ? null : fileObjectMapper.selectById(id);
+    }
+
     public CommonDtos.FileVO toVo(FileObject object) {
         return new CommonDtos.FileVO(String.valueOf(object.getId()), object.getFilename(),
                 object.getSizeBytes() == null ? 0 : object.getSizeBytes(),
                 object.getSha256(), object.getContentType());
+    }
+
+    /**
+     * 删除文件记录与磁盘文件，任何一步失败都只记日志不抛出。
+     *
+     * <p>附件解绑属于「用户已经看到成功」的操作，清理失败不该把整个请求变成 500；
+     * 残留的孤儿文件由后续巡检处理，比让用户重试更合理。</p>
+     */
+    public void deleteQuietly(FileObject object) {
+        if (object == null) {
+            return;
+        }
+        try {
+            Path path = safeResolve(object.getObjectKey());
+            Files.deleteIfExists(path);
+        } catch (IOException | RuntimeException ex) {
+            log.warn("删除磁盘文件失败，objectKey={}, cause={}", object.getObjectKey(), ex.getMessage());
+        }
+        try {
+            fileObjectMapper.deleteById(object.getId());
+        } catch (RuntimeException ex) {
+            log.warn("删除文件记录失败，fileId={}, cause={}", object.getId(), ex.getMessage());
+        }
+    }
+
+    // ---------------------------------------------------------------- 内部
+
+    private FileObject persist(MultipartFile file, String filename, String contentType,
+                               String purpose, String expectedSha256) {
+        String sha256;
+        try (InputStream in = file.getInputStream()) {
+            sha256 = sha256(in);
+        } catch (IOException ex) {
+            throw new BizException(ErrorCode.FILE_INVALID, "读取上传文件失败");
+        }
+        if (StringUtils.hasText(expectedSha256) && !expectedSha256.equalsIgnoreCase(sha256)) {
+            throw new BizException(ErrorCode.FILE_INVALID, "文件 SHA-256 校验失败");
+        }
+
+        Long uploader = SecurityUtils.userId();
+        FileObject existing = fileObjectMapper.selectOne(new LambdaQueryWrapper<FileObject>()
+                .eq(FileObject::getSha256, sha256)
+                .eq(FileObject::getBucket, purpose)
+                .eq(FileObject::getCreatedBy, uploader)
+                .last("limit 1"));
+        if (existing != null && locate(existing) != null) {
+            return existing;
+        }
+
+        String objectKey = LocalDate.now(Times.BUSINESS_ZONE).format(DIR)
+                + "/" + UUID.randomUUID() + "-" + filename;
+        Path target = safeResolve(objectKey);
+        try {
+            Files.createDirectories(target.getParent());
+            // 流式拷贝：大文件不会一次性读进堆内存
+            try (InputStream in = file.getInputStream()) {
+                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ex) {
+            throw new BizException(ErrorCode.INTERNAL_ERROR, "保存文件失败");
+        }
+
+        FileObject object = new FileObject();
+        object.setStorage("LOCAL");
+        object.setBucket(purpose);
+        object.setObjectKey(objectKey);
+        object.setFilename(filename);
+        object.setContentType(contentType);
+        object.setSizeBytes(file.getSize());
+        object.setSha256(sha256);
+        object.setCreatedBy(uploader);
+        object.setCreatedAt(Times.now());
+        object.setUpdatedAt(Times.now());
+        try {
+            fileObjectMapper.insert(object);
+        } catch (RuntimeException ex) {
+            // 入库失败必须把刚落盘的文件删掉，否则磁盘会慢慢被孤儿文件吃掉
+            try {
+                Files.deleteIfExists(target);
+            } catch (IOException cleanup) {
+                log.warn("清理孤儿文件失败，objectKey={}", objectKey, cleanup);
+            }
+            throw ex;
+        }
+        return object;
     }
 
     private Path safeResolve(String objectKey) {

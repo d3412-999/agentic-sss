@@ -78,6 +78,16 @@ public class ReportEvaluation {
     private String model;
 
     /**
+     * 面向学生的失败原因（不含堆栈）；成功时为 null
+     */
+    private String errorMessage;
+
+    /**
+     * 重新触发次数
+     */
+    private Integer retryCount;
+
+    /**
      * 完成时间
      */
     private LocalDateTime finishedAt;

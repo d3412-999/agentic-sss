@@ -57,6 +57,16 @@ public class SysUser {
     private String email;
 
     /**
+     * 手机号（教师档案）
+     */
+    private String phone;
+
+    /**
+     * 所属院系 / 部门（教师档案）
+     */
+    private String department;
+
+    /**
      * 头像文件 ID
      */
     private Long avatarFileId;

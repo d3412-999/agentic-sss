@@ -7,6 +7,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * 课程设计智能答辩与评分系统 - 后端启动类。
  */
+
+/**
+ cd langchain_service
+ .\.venv\Scripts\python.exe main.py
+ npm run dev -- --port 3000
+ */
 @SpringBootApplication
 @MapperScan("org.spring_web.spring_boot_service.mapper")
 public class SpringBootServiceApplication {
