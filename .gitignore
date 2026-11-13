@@ -8,6 +8,8 @@
 .gradle/
 build/
 out/
+# Eclipse / Gradle 生成的编译输出（不是构建脚本，clone 后不需要）
+backend/bin/
 *.class
 *.jar
 *.war
@@ -27,6 +29,8 @@ venv/
 # ---- Node / Vite ----
 node_modules/
 dist/
+.vite-check/
+.vite-check-*/
 .vite/
 *.tmpdir/
 npm-debug.log*
@@ -55,3 +59,9 @@ Thumbs.db
 
 # Python 测试缓存
 .pytest-data/
+
+# ---- Dev runtime state (PIDs / logs written by scripts/dev-up.ps1) ----
+.run/
+
+# ---- AI 助手本地工作区（个人笔记 / 会话记忆，与项目本身无关） ----
+.workbuddy/

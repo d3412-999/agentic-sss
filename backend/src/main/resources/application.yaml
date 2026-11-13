@@ -20,7 +20,7 @@ spring:
   datasource:
     url: "jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:sss}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false&createDatabaseIfNotExist=true"
     username: ${DB_USER:sss}
-    password: ${DB_PASSWORD:sss123456}
+    password: ${DB_PASSWORD:change-me}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10
@@ -31,7 +31,7 @@ spring:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
       # Leave empty when the Redis instance has no password
-      password: ${REDIS_PASSWORD:123456}
+      password: ${REDIS_PASSWORD:}
       timeout: 3s
 
   # V1 creates the 22 tables, V2 seeds the demo accounts and topics.
@@ -54,9 +54,13 @@ spring:
     time-zone: Asia/Shanghai
 
 server:
-  # 8081 by default because 8080 is frequently taken; if you change it,
-  # change vue/.env (VITE_API_TARGET) as well.
-  port: ${SERVER_PORT:8081}
+  # 【端口唯一真相源】这里就是后端实际监听的端口，其他任何地方都只是它的副本：
+  #   * vue/.env        VITE_API_TARGET 必须指向同一个端口（Vite 代理目标）
+  #   * 根 .env         SERVER_PORT —— Spring Boot 不读 .env，只是给人看的备忘
+  #   * docker-compose  容器内 SERVER_PORT + 宿主机映射端口
+  # 默认 8084：8080 常被 Intel 的 ApplicationWebServer 占用。
+  # 改这里之后，务必同步 vue/.env 并重启 Vite（.env 不会热更新）。
+  port: ${SERVER_PORT:8084}
   servlet:
     encoding:
       charset: UTF-8
@@ -86,18 +90,130 @@ sss:
     access-token-ttl: 2h
     refresh-token-ttl: 7d
 
+  admin:
+    # 管理员新增教师时的统一初始密码；教师首次登录会被要求修改
+    default-teacher-password: ${TEACHER_DEFAULT_PASSWORD:ChangeMe123!}
+    max-batch-size: ${TEACHER_BATCH_MAX:100}
+
+  student:
+    # 新建学生账号的初始密码策略：
+    #   STUDENT_NO（默认）= 密码即学号，教师不必逐个告知；
+    #   FIXED            = 统一用下面的 default-password。
+    # 两种模式都会置 must_change_password=1，首次登录强制改密。
+    default-password-mode: ${STUDENT_PASSWORD_MODE:STUDENT_NO}
+    # 仅在 default-password-mode=FIXED 时生效；前端不展示、不下发该值。
+    default-password: ${STUDENT_DEFAULT_PASSWORD:${TEACHER_DEFAULT_PASSWORD:ChangeMe123!}}
+    # 名单导入限额：单个文件 2MB、单次 500 条；.doc 提示另存为 .docx / .xlsx
+    import-max-file-bytes: ${STUDENT_IMPORT_MAX_FILE:2097152}
+    import-max-rows: ${STUDENT_IMPORT_MAX_ROWS:500}
+    import-allowed-extensions: ${STUDENT_IMPORT_EXT:xlsx,xls,docx,csv}
+    import-chunk-size: 200
+
+  defense:
+    # 答辩中「只读查看自己的源码」：解压出来的文本量上限，与上传时的 100MB 包上限无关
+    source:
+      max-file-bytes: ${DEFENSE_SOURCE_MAX_FILE:5242880}      # 单文件 5MB，超出截断并提示
+      max-files: ${DEFENSE_SOURCE_MAX_FILES:500}             # 单次最多返回 500 个文本文件
+      max-total-bytes: ${DEFENSE_SOURCE_MAX_TOTAL:209715200} # 解压后总量 200MB，防压缩炸弹
+      timeout-seconds: ${DEFENSE_SOURCE_TIMEOUT:60}          # 单次解压总超时
+      cold-requests-per-minute: 2                            # 每分钟最多 2 次冷解压（命中缓存不计）
+      bind-ip: ${DEFENSE_SOURCE_BIND_IP:true}                # 首次访问绑定 IP，换网络再访问 403
+      cache-ttl: 5m
+    # 违规判定：累计 2 次 MAJOR 违规终止答辩（教师可恢复）
+    violation:
+      threshold: ${DEFENSE_VIOLATION_THRESHOLD:2}
+      counted-types: TAB_SWITCH,DEVTOOLS,PASTE_PATTERN
+    # 题数分档：基础 6 题 + 按源码评分加题，上限 10；同分同量、可解释
+    # 替代旧规则「代码评分 / 10 + 2」（90 分要答 11 题，学生后程必然敷衍）
+    question-rule:
+      base-count: ${DEFENSE_BASE_COUNT:6}
+      max-count: ${DEFENSE_MAX_COUNT:10}
+      bonus-count: ${DEFENSE_BONUS_COUNT:1}
+      bonus-max-answer-seconds: ${DEFENSE_BONUS_SECONDS:120}
+      bonus-skippable: ${DEFENSE_BONUS_SKIPPABLE:true}
+      base-mix: 40,40,20          # 基础 / 进阶 / 挑战
+      high-tier-mix: 30,40,30     # 高分段提高挑战题占比
+      high-tier-threshold: 3      # 加题数 ≥3 视为高分段
+      tiers:                      # min <= 源码分 <= max 命中，加 add 道题
+        - { code: T0, min: 0,  max: 59,  add: 0 }
+        - { code: T1, min: 60, max: 74,  add: 1 }
+        - { code: T2, min: 75, max: 84,  add: 2 }
+        - { code: T3, min: 85, max: 94,  add: 3 }
+        - { code: T4, min: 95, max: 100, add: 4 }
+    # 三原则判定：统一 60 分通过；两项及以上不通过 → 完全依赖 AI
+    principle:
+      threshold: ${DEFENSE_PRINCIPLE_THRESHOLD:60}
+      dimensions: P1_RETELL,P2_REASON,P3_MODIFY
+      fail-count-for-ai-dependent: 2
+      override-reason-min-length: 5
+    # 批量发起：单次 ≤50 人，并发 2（再高会把本地 AI 服务打满）
+    batch:
+      max-students: ${DEFENSE_BATCH_MAX:50}
+      concurrency: ${DEFENSE_BATCH_CONCURRENCY:2}
+      allow-when-grade-published: false
+
   ai:
     # Backend -> Python AI service; path prefix of AiServiceClient is /internal/ai
     base-url: ${AI_BASE_URL:http://127.0.0.1:8000}
     internal-token: ${AI_INTERNAL_TOKEN:change-me}
     connect-timeout: 3s
     read-timeout: 90s
+    # 多文件评审：逐份摘要（map）→ 汇总总分（reduce）。
+    # 以前 9 份代码拼一段、超 6 万字符截断，靠后的包只进统计不进正文；
+    # 现在每份都有独立结论，代价是 N+1 次模型调用。
+    review:
+      enabled: ${AI_REVIEW_PER_FILE:true}
+      max-concurrent: ${AI_REVIEW_CONCURRENCY:3}
+      per-file-chars: ${AI_REVIEW_PER_FILE_CHARS:30000}
+      per-file-timeout-seconds: ${AI_REVIEW_TIMEOUT:120}
+      # 看门狗：状态停在 PENDING/RUNNING 超过 15 分钟即判 FAILED，前端才能重试。
+      # 没有它，进程重启或线程被中断会让报告页永远「评审中」。
+      stale-minutes: ${AI_REVIEW_STALE_MINUTES:15}
+      watchdog-enabled: ${AI_REVIEW_WATCHDOG:true}
+      watchdog-interval-seconds: ${AI_REVIEW_WATCHDOG_INTERVAL:120}
 
   storage:
     # FileStorageService creates this directory at startup (relative to the working dir)
     local-dir: ${STORAGE_DIR:./data/objects}
-    max-source-bytes: 104857600
-    max-report-bytes: 52428800
+    # 单文件大小上限不在这里：源码/报告各自的上限统一由 sss.upload.submission.*.max-file-bytes 定义，
+    # 避免同一个限额在两处配置里各写一遍、改一处忘一处。
+
+  # 题目附件的白名单与限额。前端通过 GET /api/v1/meta/upload-policy 读取同一份值，
+  # 所以改这里就会同时改掉前端 accept 与提示文案，不存在两处配置漂移。
+  upload:
+    topic-attachment:
+      allowed-extensions: ${UPLOAD_TOPIC_EXT:pdf,doc,docx}
+      allowed-content-types: ${UPLOAD_TOPIC_MIME:application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document}
+      max-file-bytes: ${UPLOAD_TOPIC_MAX_FILE:20971520}      # 20MB
+      max-files-per-request: ${UPLOAD_TOPIC_MAX_COUNT:5}
+      max-total-bytes: ${UPLOAD_TOPIC_MAX_TOTAL:52428800}    # 50MB
+      max-per-topic: ${UPLOAD_TOPIC_MAX_PER_TOPIC:20}
+
+    # 提交物：源码与报告各自独立限额（改一类不影响另一类）。
+    # 前端通过 GET /api/v1/meta/submission-policy 取同一份值，避免前后端校验漂移。
+    submission:
+      source:
+        allowed-extensions: ${UPLOAD_SOURCE_EXT:zip,jar}
+        max-files: ${UPLOAD_SOURCE_MAX_FILES:9}              # 1~9 份
+        max-file-bytes: ${UPLOAD_SOURCE_MAX_BYTES:104857600} # 100MB
+      report:
+        allowed-extensions: ${UPLOAD_REPORT_EXT:pdf,docx}
+        max-files: ${UPLOAD_REPORT_MAX_FILES:9}              # 1~9 份
+        max-file-bytes: ${UPLOAD_REPORT_MAX_BYTES:52428800}  # 50MB
+      similarity:
+        enabled: ${SIMILARITY_ENABLED:true}
+        # 1.0 = 内容完全相同；0.75 = 源码包结构一致（条目名相同）但内容不同
+        threshold: ${SIMILARITY_THRESHOLD:0.75}
+        # 同一学生自己不同版本之间不比对：反复改稿是正常行为，比对只会制造噪声
+        compare-within-same-student: ${SIMILARITY_SAME_STUDENT:false}
+        # 内容指纹（去注释/去空白/统一小写 + 5-gram MinHash）的命中门槛。
+        # 比结构阈值高，因为它是"像"而不是"是"，留足误报余量。
+        content-threshold: ${SIMILARITY_CONTENT_THRESHOLD:0.85}
+        fingerprint-enabled: ${SIMILARITY_FINGERPRINT:true}
+        # 超过 50MB 的包不算指纹（解压+归一化约 1~3 秒/份），仍参与 sha256 与结构比对
+        max-fingerprint-bytes: ${SIMILARITY_MAX_FP_BYTES:52428800}
+        # 教师端标红门槛：低于它的命中只作提示，不标红
+        highlight-threshold: ${SIMILARITY_HIGHLIGHT:0.85}
 
   security:
     # Trust X-Forwarded-For ONLY when the direct peer matches one of these
@@ -107,9 +223,11 @@ sss:
     trusted-proxies: ${TRUSTED_PROXIES:}
 
   cors:
+    # 开发期放行本机任意端口（前端换端口、用 localhost 或 127.0.0.1 打开都不会 403）。
+    # 生产部署请改成固定的前端域名，例如 https://sss.example.com。
     allowed-origins:
-      - http://localhost:${FRONTEND_PORT:5173}
-      - http://127.0.0.1:${FRONTEND_PORT:5173}
+      - http://localhost:[*]
+      - http://127.0.0.1:[*]
 
 logging:
   level:
