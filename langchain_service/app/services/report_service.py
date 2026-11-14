@@ -16,7 +16,6 @@ from app.schemas.report import (
     ReportEvaluationResponse,
 )
 from app.services.llm_service import LlmService
-from app.services.mock_responses import mock_report_aggregate, mock_report_evaluation
 from app.services.scoring import (
     REPORT_DIMENSION_SPECS,
     grade_of,
@@ -68,7 +67,6 @@ class ReportService:
             schema=ReportEvaluationDraft,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=build_user_prompt(clipped_request, reference_contexts),
-            mock_factory=lambda: mock_report_evaluation(clipped_request),
         )
 
         draft = result.data
@@ -127,7 +125,6 @@ class ReportService:
             schema=ReportEvaluationDraft,
             system_prompt=AGGREGATE_SYSTEM_PROMPT,
             user_prompt=build_aggregate_user_prompt(request),
-            mock_factory=lambda: mock_report_aggregate(request),
         )
         draft = result.data
         dimensions = normalize_dimensions(draft.dimensions, REPORT_DIMENSION_SPECS)

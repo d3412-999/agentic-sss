@@ -1,10 +1,9 @@
-"""语音转写（ASR）服务：provider 可在 mock / sherpa_onnx 之间切换。
+"""语音转写（ASR）服务：基于 sherpa-onnx 的本地中文 paraformer 模型。
 
-- mock：离线可用，任意非空音频返回固定中文文本与 2 段 segments，保证联调与测试不依赖模型；
-- sherpa_onnx：懒加载可选依赖（见 requirements-optional.txt），只接受 16k mono WAV；
-  依赖未安装或模型目录缺失时返回 503 ASR_NOT_CONFIGURED，音频非法返回 400 INVALID_AUDIO。
-
-设计约束：sherpa_onnx 只在 provider 命中时 import，缺包不会影响 mock 模式与既有接口。
+- 只接受 16k mono PCM16 WAV（前端答辩页已自动生成标准 WAV）；
+- 模型目录缺失 / 依赖未安装返回 503 ``ASR_NOT_CONFIGURED``；
+- 音频非法返回 400 ``INVALID_AUDIO``；
+- 识别在首次调用时懒加载模型，进程内复用识别器。
 """
 
 from __future__ import annotations
@@ -24,16 +23,7 @@ from app.schemas.asr import AsrSegment, AsrTranscribeResponse
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_SAMPLE_WIDTH = 2
 DEFAULT_CHANNELS = 1
-# mock 模式下无法从音频头算出时长时的兜底值
-MOCK_FALLBACK_DURATION_MS = 3000
-MOCK_CONFIDENCE = 0.9
-MOCK_MODEL = "mock-asr"
-
-MOCK_TEXT = "老师好，我的课程设计实现了图书管理系统的借阅功能，使用 JavaFX 和 JDBC 完成界面与数据访问。"
-MOCK_SEGMENT_TEXTS = (
-    "老师好，我的课程设计实现了图书管理系统的借阅功能，",
-    "使用 JavaFX 和 JDBC 完成界面与数据访问。",
-)
+PROVIDER = "sherpa_onnx"
 
 
 @dataclass(frozen=True)
@@ -54,7 +44,7 @@ class WavInfo:
 
 
 def parse_wav(audio_bytes: bytes) -> WavInfo | None:
-    """用标准库解析 WAV；不是合法 WAV 时返回 None（不抛异常，便于 mock 容忍任意格式）。"""
+    """用标准库解析 WAV；不是合法 WAV 时返回 None（由调用方决定如何报错）。"""
     if not audio_bytes:
         return None
     try:
@@ -101,8 +91,8 @@ class AsrService:
 
     @property
     def provider(self) -> str:
-        """当前 provider（mock / sherpa_onnx）。"""
-        return self._settings.asr_provider
+        """当前 provider（固定为 sherpa_onnx）。"""
+        return PROVIDER
 
     # ---------------------------------------------------------------- 对外能力
 
@@ -117,12 +107,6 @@ class AsrService:
         if not audio_bytes:
             raise AiServiceError("音频内容为空", status_code=400, code="INVALID_AUDIO")
         language = language or self._settings.asr_language
-
-        if self._settings.asr_provider == "mock":
-            wav = parse_wav(audio_bytes)
-            duration_ms = wav.duration_ms if wav else MOCK_FALLBACK_DURATION_MS
-            return self._mock_response(duration_ms)
-
         return self._transcribe_sherpa(audio_bytes, language)
 
     def transcribe_pcm(
@@ -131,66 +115,22 @@ class AsrService:
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         language: str | None = None,
     ) -> AsrTranscribeResponse:
-        """实时流结束后的一次性识别（mock 与整段识别共用固定文本）。"""
+        """实时流结束后的一次性识别。"""
         language = language or self._settings.asr_language
-        duration_ms = int(round(len(pcm_bytes) / DEFAULT_SAMPLE_WIDTH / max(sample_rate, 1) * 1000))
-
-        if self._settings.asr_provider == "mock":
-            if not pcm_bytes:
-                return AsrTranscribeResponse(
-                    text="",
-                    segments=[],
-                    duration_ms=0,
-                    confidence=0.0,
-                    provider="mock",
-                    model=MOCK_MODEL,
-                )
-            return self._mock_response(duration_ms)
-
         if not pcm_bytes:
             return AsrTranscribeResponse(
                 text="",
                 segments=[],
                 duration_ms=0,
                 confidence=0.0,
-                provider="sherpa_onnx",
+                provider=PROVIDER,
                 model=Path(self._settings.asr_model_dir).name,
             )
         return self._decode_sherpa(pcm16_to_samples(pcm_bytes), sample_rate)
 
     def partial_text(self, received_bytes: int, language: str | None = None) -> str:
-        """流式过程中的 partial 文本；mock 返回确定性占位，sherpa 暂不产出中间结果。"""
-        if self._settings.asr_provider != "mock" or received_bytes <= 0:
-            return ""
-        seconds = received_bytes / DEFAULT_SAMPLE_WIDTH / DEFAULT_SAMPLE_RATE
-        return f"正在识别…（已接收 {seconds:.1f} 秒音频）"
-
-    # ---------------------------------------------------------------- mock
-
-    def _mock_response(self, duration_ms: int) -> AsrTranscribeResponse:
-        """确定性的 mock 结果：固定文本 + 均分的 2 段 segments。"""
-        duration_ms = max(int(duration_ms), 0)
-        half_ms = duration_ms // 2
-        segments = [
-            AsrSegment(
-                start=0.0,
-                end=round(half_ms / 1000, 3),
-                text=MOCK_SEGMENT_TEXTS[0],
-            ),
-            AsrSegment(
-                start=round(half_ms / 1000, 3),
-                end=round(duration_ms / 1000, 3),
-                text=MOCK_SEGMENT_TEXTS[1],
-            ),
-        ]
-        return AsrTranscribeResponse(
-            text=MOCK_TEXT,
-            segments=segments,
-            duration_ms=duration_ms,
-            confidence=MOCK_CONFIDENCE,
-            provider="mock",
-            model=MOCK_MODEL,
-        )
+        """sherpa-onnx 当前不提供中间结果，流式过程中不返回 partial 文本。"""
+        return ""
 
     # ---------------------------------------------------------------- sherpa_onnx
 
@@ -198,13 +138,13 @@ class AsrService:
         wav = parse_wav(audio_bytes)
         if wav is None:
             raise AiServiceError(
-                "sherpa_onnx 模式仅支持 WAV（16k mono PCM16），请先在前端转成 WAV 后重试",
+                "仅支持 WAV（16k mono PCM16），请先在前端转成 WAV 后重试",
                 status_code=400,
                 code="INVALID_AUDIO",
             )
         if wav.sample_width != DEFAULT_SAMPLE_WIDTH:
             raise AiServiceError(
-                "sherpa_onnx 模式仅支持 16bit PCM WAV",
+                "仅支持 16bit PCM WAV",
                 status_code=400,
                 code="INVALID_AUDIO",
             )
@@ -230,19 +170,19 @@ class AsrService:
             raise AiServiceError(f"语音识别失败：{exc}", status_code=500, code="ASR_FAILED") from exc
 
         duration_ms = int(round(len(samples) * 1000 / max(sample_rate, 1)))
-        segments = self._build_sherpa_segments(text, duration_ms)
+        segments = self._build_segments(text, duration_ms)
         return AsrTranscribeResponse(
             text=text,
             segments=segments,
             duration_ms=duration_ms,
             # paraformer 不提供整体置信度，这里按 0 返回，不伪造
             confidence=0.0,
-            provider="sherpa_onnx",
+            provider=PROVIDER,
             model=self._model_name or Path(self._settings.asr_model_dir).name,
         )
 
     @staticmethod
-    def _build_sherpa_segments(text: str, duration_ms: int) -> list[AsrSegment]:
+    def _build_segments(text: str, duration_ms: int) -> list[AsrSegment]:
         """sherpa-onnx 结果没有开箱可用的分句信息，整段作为 1 条 segment 返回。"""
         if not text:
             return []
@@ -262,10 +202,10 @@ class AsrService:
                 code="ASR_NOT_CONFIGURED",
             )
         try:
-            import sherpa_onnx  # 懒加载可选依赖，mock 模式不需要
+            import sherpa_onnx
         except ImportError as exc:
             raise AiServiceError(
-                "未安装 sherpa-onnx，请先执行 pip install -r requirements-optional.txt",
+                "未安装 sherpa-onnx，请先执行 pip install -r requirements.txt",
                 status_code=503,
                 code="ASR_NOT_CONFIGURED",
             ) from exc

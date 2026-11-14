@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypeVar
+from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
@@ -42,18 +42,11 @@ class LlmService:
         schema: type[SchemaType],
         system_prompt: str,
         user_prompt: str,
-        mock_factory: Callable[[], dict[str, Any]] | None = None,
     ) -> LlmResult:
-        """调用大模型并返回经过 Pydantic 校验的结构化结果。"""
-        if self._settings.llm_provider == "mock":
-            if mock_factory is None:
-                raise LlmResponseFormatError(f"任务 {task} 缺少 mock 数据构造器")
-            return LlmResult(
-                data=schema.model_validate(mock_factory()),
-                model="mock",
-                usage={},
-            )
+        """调用大模型并返回经过 Pydantic 校验的结构化结果。
 
+        未配置 ``LLM_API_KEY`` 时直接抛出 503 ``LLM_NOT_CONFIGURED``，不做任何兜底。
+        """
         if not self._settings.llm_ready:
             raise LlmNotConfiguredError()
 

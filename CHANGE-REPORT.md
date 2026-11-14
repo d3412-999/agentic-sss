@@ -54,7 +54,7 @@ AI 与前端走真实运行；Gradle / Vite 完整构建留待 CI（CI 已改为
 | Java 全量语法 | `javac -XDshould-stop.ifNoError=PARSE` 扫描 `backend/src` 全部 115 个 `.java` | exit 0，无语法错误 |
 | 后端纯逻辑单测 | 用最小 JUnit5 替身 + `MiniJUnit` 反射运行器执行 5 个测试类 | **41 passed / 0 failed** |
 | 纯逻辑交叉验证 | Lead 独立 harness（ArchiveGuard/ScoreGuard/GradeMath/CsvUtil/TrustedProxyIp） | **65/65 passed**（发现并修复 1 个 IPv6 字面量校验 bug） |
-| AI 服务测试 | `pytest -q`（`LLM_PROVIDER=mock`） | **29 passed** |
+| AI 服务测试 | `pytest -q`（测试替身，不访问真实模型） | 见 CI 输出 |
 | AI 语法 | `python -m compileall -q app tests` | exit 0 |
 | 前端 SFC/JS | `@vue/compiler-sfc` 编译 30 个 SFC + `node --check` 10 个 JS + 200 条 import 可达性 | **0 problems** |
 | 空白/差分卫生 | `git diff --check` | clean |
@@ -96,7 +96,7 @@ AI 与前端走真实运行；Gradle / Vite 完整构建留待 CI（CI 已改为
 | 层 | 新增内容 |
 |---|---|
 | Java 后端 | `DefenseController`（10 接口）+ `DefenseService`（906 行）+ `DefenseDtos` + `V5__defense_voice_and_face.sql`；`AiServiceClient` 新增 `transcribeAudio`（multipart）/`facePresence`；`DefenseSession`/`DefenseAnswer` 加在场检测与 ASR 模型字段 |
-| AI 服务 | `POST /internal/ai/asr/transcribe`（WAV 整段转写）、`WS /internal/ai/asr/stream`（PCM16 流式，供下一阶段）、`POST /internal/ai/face/presence`（OpenCV Haar 只判有人）；provider 双模式 `mock`/`sherpa_onnx`、`mock`/`opencv`；`requirements-optional.txt` |
+| AI 服务 | `POST /internal/ai/asr/transcribe`（WAV 整段转写）、`WS /internal/ai/asr/stream`（PCM16 流式，供下一阶段）、`POST /internal/ai/face/presence`（OpenCV Haar 只判有人）；真实 sherpa-onnx ASR + OpenCV 人脸检测（无 mock 分支），依赖在 `requirements.txt` |
 | 前端 | 新增 `DefenseView.vue`（摄像头预览 + 3s 在场检测、录音→16k WAV→上传→转写展示、计时/时限、教师评分）、开课工作台「答辩」页签（`DefenseTab.vue`）、学生「进入答辩」入口、路由 `/defense/:sessionId` |
 | 文档 | `docs/defense-asr-face.md`（流程/接口/模型配置/隐私边界）；README、CHANGELOG、langchain_service/README 同步 |
 
@@ -107,4 +107,4 @@ AI 与前端走真实运行；Gradle / Vite 完整构建留待 CI（CI 已改为
 - 前端：`@vue/compiler-sfc` 编译 32 个 SFC + 10 个 JS + 220 条 import 可达性 **0 problems**；
 - 独立语义审查（另一 teammate）：确认 7 个答辩文件无编译级错误，并按审查建议修复 3 处：结束答辩不再把 GRADED 回退为 DEFENDED、ASR 前 IO 失败会把作答置 FAILED、在场检测加 base64 长度上限。
 
-已知限制（写入 docs/CHANGELOG/README）：实时流式转写的 Java WS 代理与人脸身份识别/活体为下一阶段；默认 mock provider，sherpa-onnx/opencv 真实链路需在目标机装可选依赖并下载模型后复核；并发重复「发起答辩」暂无 DB 唯一约束兜底（应用层先查后插）。
+已知限制（写入 docs/CHANGELOG/README）：实时流式转写的 Java WS 代理与人脸身份识别/活体为下一阶段；大模型需配置 `LLM_API_KEY`，ASR 需准备 sherpa-onnx 中文模型目录；并发重复「发起答辩」暂无 DB 唯一约束兜底（应用层先查后插）。

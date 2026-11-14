@@ -27,5 +27,5 @@ class FacePresenceResponse(CamelModel):
     present: bool = False
     face_count: int = 0
     boxes: list[FaceBox] = Field(default_factory=list)
-    provider: str = "mock"
+    provider: str = "opencv"
     model: str = ""

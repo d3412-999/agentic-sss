@@ -16,7 +16,6 @@ from app.schemas.code import (
 from app.schemas.common import DimensionScore
 from app.schemas.materials import SourceFile
 from app.services.llm_service import LlmService
-from app.services.mock_responses import mock_code_aggregate, mock_code_review
 from app.services.scoring import CODE_DIMENSION_SPECS, clamp_score
 from app.utils.prompt_guard import append_warning, detect_injection
 from app.utils.text_utils import clip_source_material
@@ -87,7 +86,6 @@ class CodeReviewService:
             schema=CodeReviewDraft,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=build_user_prompt(clipped_request),
-            mock_factory=lambda: mock_code_review(material),
         )
         draft = result.data
 
@@ -146,7 +144,6 @@ class CodeReviewService:
             schema=CodeReviewDraft,
             system_prompt=AGGREGATE_SYSTEM_PROMPT,
             user_prompt=build_aggregate_user_prompt(request),
-            mock_factory=lambda: mock_code_aggregate(request),
         )
         draft = result.data
 

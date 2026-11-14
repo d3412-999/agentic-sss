@@ -5,7 +5,6 @@
 """
 
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,9 +34,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AI_INTERNAL_TOKEN", "INTERNAL_TOKEN"),
     )
 
-    # ---- 大模型 ----
-    # openai：调用 OpenAI 兼容接口；mock：返回确定性数据，便于本地联调与测试
-    llm_provider: Literal["openai", "mock"] = "openai"
+    # ---- 大模型（OpenAI 兼容接口，必填 API Key）----
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
@@ -62,23 +59,17 @@ class Settings(BaseSettings):
     # 使用 Python 标准库 sqlite3 持久化；LightRAG 可用时同时写入 LightRAG
     template_db_path: str = "./data/template_library.db"
 
-    # ---- 语音转写（ASR，可选）----
-    # mock：离线返回固定中文文本；sherpa_onnx：需安装 requirements-optional.txt 并准备本地模型
-    asr_provider: Literal["mock", "sherpa_onnx"] = "mock"
+    # ---- 语音转写（sherpa-onnx 中文 paraformer，需本地模型）----
     asr_model_dir: str = "./models/sherpa-onnx-paraformer-zh"
     asr_language: str = "zh-CN"
 
-    # ---- 人脸在场检测（可选）----
-    # mock：按 base64 长度模拟；opencv：用内置 haarcascade 检测，只判“有没有人”，图像不落盘
-    face_provider: Literal["mock", "opencv"] = "mock"
+    # ---- 人脸在场检测（OpenCV haarcascade，只判"有没有人"）----
     face_min_size: int = 60
-    # 预留给后续自定义人脸模型；OpenCV 内置 haarcascade 当前不使用该目录
-    face_model_dir: str = "./models/face"
 
     @property
     def llm_ready(self) -> bool:
-        """大模型是否可用：mock 模式始终可用，openai 模式必须配置密钥。"""
-        return self.llm_provider == "mock" or bool(self.llm_api_key.strip())
+        """大模型是否可用：必须配置 LLM_API_KEY。"""
+        return bool(self.llm_api_key.strip())
 
 
 @lru_cache

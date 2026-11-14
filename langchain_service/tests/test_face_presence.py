@@ -1,95 +1,90 @@
-"""人脸在场检测接口测试：mock provider + 错误码 + opencv 未安装降级。"""
+"""人脸在场检测测试：真实 OpenCV 实现 + 错误码（不再有 mock 分支）。"""
 
 import base64
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import Settings
-from app.core.exceptions import AiServiceError
 from app.main import app
-from app.services.face_presence_service import FacePresenceService
+from app.services.face_presence_service import FacePresenceService, normalize_image_base64
 
 client = TestClient(app)
 HEADERS = {"X-Internal-Token": "test-token"}
 
 
-def _base64_payload(size: int) -> str:
-    """生成指定长度的合法 base64 串（mock 模式按长度判定是否有人）。"""
-    return base64.b64encode(b"x" * size).decode("ascii")
+def _blank_png_base64(width: int = 64, height: int = 48) -> str:
+    """生成一张纯色 PNG（无人脸），base64 编码。"""
+    import cv2
+    import numpy as np
+
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    ok, buffer = cv2.imencode(".png", image)
+    assert ok
+    return base64.b64encode(buffer.tobytes()).decode("ascii")
 
 
-def test_presence_mock_detects_face() -> None:
-    """mock 模式：base64 长度 > 100 视为有人。"""
+def test_normalize_image_base64_strips_data_url() -> None:
+    assert normalize_image_base64("data:image/png;base64, ABC ") == "ABC"
+    assert normalize_image_base64(" A B ") == "AB"
+
+
+def test_presence_blank_image_reports_no_face() -> None:
     response = client.post(
         "/internal/ai/face/presence",
-        json={"imageBase64": _base64_payload(200)},
-        headers=HEADERS,
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["present"] is True
-    assert data["faceCount"] == 1
-    assert data["boxes"] == []
-    assert data["provider"] == "mock"
-    assert data["model"]
-
-
-def test_presence_mock_reports_no_face_for_short_payload() -> None:
-    """mock 模式：短 base64 视为无人。"""
-    response = client.post(
-        "/internal/ai/face/presence",
-        json={"imageBase64": "abc"},
+        json={"imageBase64": _blank_png_base64()},
         headers=HEADERS,
     )
     assert response.status_code == 200
     data = response.json()
     assert data["present"] is False
     assert data["faceCount"] == 0
+    assert data["boxes"] == []
+    assert data["provider"] == "opencv"
+    assert data["model"] == "haarcascade_frontalface_default"
 
 
 def test_presence_requires_internal_token() -> None:
-    """缺少 X-Internal-Token 时 401。"""
     response = client.post(
         "/internal/ai/face/presence",
-        json={"imageBase64": _base64_payload(200)},
+        json={"imageBase64": _blank_png_base64()},
     )
     assert response.status_code == 401
 
 
 def test_presence_empty_image_rejected() -> None:
-    """空图片返回 400 INVALID_IMAGE。"""
     response = client.post(
         "/internal/ai/face/presence",
         json={"imageBase64": "   "},
         headers=HEADERS,
     )
     assert response.status_code == 400
-    body = response.json()
-    assert body["code"] == "INVALID_IMAGE"
+    assert response.json()["code"] == "INVALID_IMAGE"
+
+
+def test_presence_invalid_base64_rejected() -> None:
+    response = client.post(
+        "/internal/ai/face/presence",
+        json={"imageBase64": "not-base64!!"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_IMAGE"
 
 
 def test_presence_accepts_optional_min_face_size() -> None:
-    """minFaceSize 可选，透传后仍按 mock 规则返回。"""
     response = client.post(
         "/internal/ai/face/presence",
-        json={"imageBase64": _base64_payload(200), "minFaceSize": 80},
+        json={"imageBase64": _blank_png_base64(), "minFaceSize": 80},
         headers=HEADERS,
     )
     assert response.status_code == 200
-    assert response.json()["present"] is True
+    assert response.json()["present"] is False
 
 
-def test_opencv_provider_without_cv2_is_not_configured() -> None:
-    """opencv 模式：可选依赖未安装时返回 503 FACE_NOT_CONFIGURED。"""
-    try:
-        import cv2  # noqa: F401
-    except ImportError:
-        pass
-    else:  # pragma: no cover - 本测试环境预期未安装 opencv
-        pytest.skip("当前环境已安装 opencv，跳过未配置用例")
+def test_service_uses_opencv_detector() -> None:
+    from app.core.config import Settings
 
-    service = FacePresenceService(Settings(face_provider="opencv"))
-    with pytest.raises(AiServiceError) as exc_info:
-        service.presence(_base64_payload(200), None)
-    assert exc_info.value.code == "FACE_NOT_CONFIGURED"
+    service = FacePresenceService(Settings())
+    result = service.presence(_blank_png_base64())
+    assert result.provider == "opencv"
+    assert result.present is False

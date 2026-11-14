@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+### 移除（AI 服务的 mock / 占位实现）
+
+- **不再提供 mock provider**：`langchain_service` 删除 `mock_responses.py`、`LLM_PROVIDER` / `ASR_PROVIDER` /
+  `FACE_PROVIDER` 开关与 `requirements-optional.txt`；大模型、语音转写、人脸检测只保留真实实现：
+  - LLM 必须配置 `LLM_API_KEY`（OpenAI 兼容接口），未配置时 AI 评审/出题/评分返回 503 `LLM_NOT_CONFIGURED`；
+  - ASR 固定使用 sherpa-onnx 中文 paraformer 本地模型，模型/依赖缺失返回 503 `ASR_NOT_CONFIGURED`；
+  - 人脸在场检测固定使用 OpenCV haarcascade（随 `opencv-python-headless` 内置）；
+- **依赖**：`requirements.txt` 直接包含 `sherpa-onnx` 与 `opencv-python-headless`；Dockerfile/Compose 删除 mock 环境变量，
+  AI 容器挂载 `langchain_service/models` 作为模型目录；
+- **测试**：不再用 mock provider 断言固定文本；改用 `tests/llm_doubles.py` 测试替身覆盖服务逻辑，
+  并验证未配置 Key / 缺模型时返回 503；ASR/人脸测试覆盖真实解析与 OpenCV 检测。
+
 ### 修复（学生「我的选题」选中后详情区反复闪烁）
 
 - **根因**：改造成左目录 + 右详情后，`page-split` 被放进了 `v-if="loading"` 的 `v-else` 分支。

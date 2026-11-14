@@ -1,4 +1,4 @@
-"""语音转写接口测试：mock provider（离线）+ 整段上传 + WebSocket 流式 + 错误码。"""
+"""语音转写测试：真实实现（sherpa-onnx）的错误码、WAV 解析与识别器注入。"""
 
 import io
 import wave
@@ -10,10 +10,29 @@ from starlette.websockets import WebSocketDisconnect
 from app.core.config import Settings
 from app.core.exceptions import AiServiceError
 from app.main import app
-from app.services.asr_service import AsrService
+from app.services.asr_service import AsrService, parse_wav, pcm16_to_samples
 
 client = TestClient(app)
 HEADERS = {"X-Internal-Token": "test-token"}
+
+
+class _FakeStream:
+    def __init__(self) -> None:
+        self.result = type("Result", (), {"text": ""})()
+        self.sample_rate = 0
+
+    def accept_waveform(self, sample_rate: int, samples: list[float]) -> None:
+        self.sample_rate = sample_rate
+
+
+class _FakeRecognizer:
+    text = "老师好，我完成了图书管理系统。"
+
+    def create_stream(self) -> _FakeStream:
+        return _FakeStream()
+
+    def decode_stream(self, stream: _FakeStream) -> None:
+        stream.result.text = self.text
 
 
 def _make_wav(duration_ms: int = 1000, sample_rate: int = 16000) -> bytes:
@@ -28,27 +47,27 @@ def _make_wav(duration_ms: int = 1000, sample_rate: int = 16000) -> bytes:
     return buffer.getvalue()
 
 
-def test_transcribe_mock_returns_fixed_text_and_segments() -> None:
-    """mock 模式：WAV 上传返回固定中文文本、2 段 segments 与真实时长。"""
-    response = client.post(
-        "/internal/ai/asr/transcribe",
-        files={"file": ("answer.wav", _make_wav(1000), "audio/wav")},
-        headers=HEADERS,
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["text"]
-    assert len(data["segments"]) == 2
-    assert 900 <= data["durationMs"] <= 1100
-    assert 0 < data["confidence"] <= 1
-    assert data["provider"] == "mock"
-    assert data["model"]
-    # 对外字段必须是 camelCase（key 契约见答辩契约 A1）
-    assert {"durationMs", "faceCount"} - set(data) == {"faceCount"}
+def test_parse_wav_roundtrip() -> None:
+    info = parse_wav(_make_wav(500))
+    assert info is not None
+    assert info.sample_rate == 16000
+    assert info.channels == 1
+    assert info.sample_width == 2
+    assert 450 <= info.duration_ms <= 550
+    assert parse_wav(b"not-a-wav") is None
+
+
+def test_pcm16_to_samples_clamps_and_downmixes() -> None:
+    samples = pcm16_to_samples(b"\xff\x7f\x00\x80", channels=1)
+    assert len(samples) == 2
+    assert samples[0] == pytest.approx(32767 / 32768, rel=1e-6)
+    assert samples[1] == pytest.approx(-32768 / 32768, rel=1e-6)
+    # 立体声只取第一个声道
+    stereo = pcm16_to_samples(b"\x00\x10\x00\x20", channels=2)
+    assert stereo == pytest.approx([0x1000 / 32768.0])
 
 
 def test_transcribe_requires_internal_token() -> None:
-    """缺少 X-Internal-Token 时 401。"""
     response = client.post(
         "/internal/ai/asr/transcribe",
         files={"file": ("answer.wav", _make_wav(100), "audio/wav")},
@@ -57,62 +76,75 @@ def test_transcribe_requires_internal_token() -> None:
 
 
 def test_transcribe_empty_audio_rejected() -> None:
-    """空音频返回 400 INVALID_AUDIO。"""
     response = client.post(
         "/internal/ai/asr/transcribe",
         files={"file": ("empty.wav", b"", "audio/wav")},
         headers=HEADERS,
     )
     assert response.status_code == 400
-    body = response.json()
-    assert body["code"] == "INVALID_AUDIO"
+    assert response.json()["code"] == "INVALID_AUDIO"
 
 
-def test_transcribe_mock_accepts_non_wav() -> None:
-    """mock 模式对非 WAV（webm/ogg）也能返回结果，兜底时长 3000ms。"""
+def test_transcribe_non_wav_rejected() -> None:
     response = client.post(
         "/internal/ai/asr/transcribe",
         files={"file": ("answer.webm", b"not-a-real-webm", "audio/webm")},
         headers=HEADERS,
     )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_AUDIO"
+
+
+def test_transcribe_without_model_returns_503() -> None:
+    """没有模型目录时必须返回 503，而不是返回假文本。"""
+    response = client.post(
+        "/internal/ai/asr/transcribe",
+        files={"file": ("answer.wav", _make_wav(300), "audio/wav")},
+        headers=HEADERS,
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "ASR_NOT_CONFIGURED"
+
+
+def test_transcribe_with_injected_recognizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(AsrService, "_get_sherpa_recognizer", lambda self: _FakeRecognizer())
+    response = client.post(
+        "/internal/ai/asr/transcribe",
+        files={"file": ("answer.wav", _make_wav(1000), "audio/wav")},
+        headers=HEADERS,
+    )
     assert response.status_code == 200
     data = response.json()
-    assert data["provider"] == "mock"
-    assert data["durationMs"] == 3000
-    assert len(data["segments"]) == 2
+    assert data["provider"] == "sherpa_onnx"
+    assert data["text"] == _FakeRecognizer.text
+    assert len(data["segments"]) == 1
+    assert 900 <= data["durationMs"] <= 1100
 
 
-def test_stream_mock_partial_and_final() -> None:
-    """WebSocket 流式：二进制 PCM 帧产生 partial，end 后返回 final。"""
-    with client.websocket_connect("/internal/ai/asr/stream", headers=HEADERS) as websocket:
-        websocket.send_json({"type": "config", "language": "zh-CN"})
-        websocket.send_bytes(b"\x00\x00" * 8000)  # 16k mono：0.5 秒
-
-        messages = [websocket.receive_json(), websocket.receive_json()]
-        assert "partial" in [message["type"] for message in messages]
-
-        websocket.send_json({"type": "end"})
-        final = websocket.receive_json()
-
-    assert final["type"] == "final"
-    assert final["text"]
-    assert len(final["segments"]) == 2
-    assert final["durationMs"] == 500
-
-
-def test_stream_without_audio_still_finalizes() -> None:
-    """没有音频帧直接 end：返回空文本 final 并正常关闭。"""
+def test_stream_without_audio_still_finalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(AsrService, "_get_sherpa_recognizer", lambda self: _FakeRecognizer())
     with client.websocket_connect("/internal/ai/asr/stream", headers=HEADERS) as websocket:
         websocket.send_json({"type": "end"})
         final = websocket.receive_json()
-
     assert final["type"] == "final"
     assert final["text"] == ""
     assert final["durationMs"] == 0
 
 
+def test_stream_with_pcm_returns_final_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(AsrService, "_get_sherpa_recognizer", lambda self: _FakeRecognizer())
+    with client.websocket_connect("/internal/ai/asr/stream", headers=HEADERS) as websocket:
+        websocket.send_json({"type": "config", "language": "zh-CN"})
+        assert websocket.receive_json()["type"] == "config"
+        websocket.send_bytes(b"\x00\x00" * 8000)  # 16k mono：0.5 秒
+        websocket.send_json({"type": "end"})
+        final = websocket.receive_json()
+    assert final["type"] == "final"
+    assert final["text"] == _FakeRecognizer.text
+    assert final["durationMs"] == 500
+
+
 def test_stream_rejects_bad_token_with_4401() -> None:
-    """握手令牌错误时按契约以 4401 关闭。"""
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             "/internal/ai/asr/stream",
@@ -122,19 +154,9 @@ def test_stream_rejects_bad_token_with_4401() -> None:
     assert exc_info.value.code == 4401
 
 
-def test_sherpa_provider_without_model_is_not_configured() -> None:
-    """sherpa_onnx 模式：模型目录缺失返回 503 ASR_NOT_CONFIGURED（无需安装依赖）。"""
-    settings = Settings(asr_provider="sherpa_onnx", asr_model_dir="./.missing-sherpa-model")
-    service = AsrService(settings)
+def test_service_reports_sherpa_provider_and_missing_model() -> None:
+    service = AsrService(Settings(asr_model_dir="./.missing-sherpa-model"))
+    assert service.provider == "sherpa_onnx"
     with pytest.raises(AiServiceError) as exc_info:
         service.transcribe(_make_wav(200), "answer.wav", "audio/wav", "zh-CN")
     assert exc_info.value.code == "ASR_NOT_CONFIGURED"
-
-
-def test_sherpa_provider_rejects_non_wav() -> None:
-    """sherpa_onnx 模式：非 WAV 返回 400 INVALID_AUDIO，避免静默跑 mock。"""
-    settings = Settings(asr_provider="sherpa_onnx")
-    service = AsrService(settings)
-    with pytest.raises(AiServiceError) as exc_info:
-        service.transcribe(b"not-a-wav", "answer.webm", "audio/webm", None)
-    assert exc_info.value.code == "INVALID_AUDIO"

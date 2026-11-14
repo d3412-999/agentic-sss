@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     logger.info(
         "AI 服务启动：环境=%s，大模型=%s，LightRAG=%s",
         settings.environment,
-        settings.llm_provider,
+        settings.llm_model if settings.llm_ready else "未配置（缺少 LLM_API_KEY）",
         "启用" if settings.lightrag_enabled else "关闭",
     )
     yield

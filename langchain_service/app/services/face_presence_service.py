@@ -1,4 +1,4 @@
-"""人脸在场检测服务：provider 可在 mock / opencv 之间切换。
+"""人脸在场检测服务：基于 OpenCV haarcascade。
 
 只判断画面里“有没有人”，不做身份识别；图片只在内存中解码检测，
 不写磁盘、不落库，满足答辩场景的隐私约定。
@@ -14,12 +14,8 @@ from app.core.config import Settings
 from app.core.exceptions import AiServiceError
 from app.schemas.face import FaceBox, FacePresenceResponse
 
-MOCK_PROVIDER = "mock"
-MOCK_MODEL = "mock-face"
-OPENCV_PROVIDER = "opencv"
-OPENCV_MODEL = "haarcascade_frontalface_default"
-# mock 模式：base64 长度超过该阈值视为“画面里有人”
-MOCK_BASE64_THRESHOLD = 100
+PROVIDER = "opencv"
+MODEL = "haarcascade_frontalface_default"
 DEFAULT_FACE_MIN_SIZE = 60
 MIN_FACE_MIN_SIZE = 10
 
@@ -49,27 +45,16 @@ class FacePresenceService:
             MIN_FACE_MIN_SIZE,
             int(min_face_size if min_face_size is not None else self._settings.face_min_size or DEFAULT_FACE_MIN_SIZE),
         )
-
-        if self._settings.face_provider == "mock":
-            present = len(image) > MOCK_BASE64_THRESHOLD
-            return FacePresenceResponse(
-                present=present,
-                face_count=1 if present else 0,
-                boxes=[],
-                provider=MOCK_PROVIDER,
-                model=MOCK_MODEL,
-            )
-
         return self._detect_opencv(image, size)
 
     def _detect_opencv(self, image_base64: str, min_face_size: int) -> FacePresenceResponse:
-        """OpenCV haarcascade 检测；cv2/numpy 懒加载，未安装返回 503 FACE_NOT_CONFIGURED。"""
+        """OpenCV haarcascade 检测；解码失败/模型缺失返回明确错误码。"""
         try:
-            import cv2  # 懒加载可选依赖，mock 模式不需要
+            import cv2
             import numpy as np
         except ImportError as exc:
             raise AiServiceError(
-                "未安装 opencv-python-headless，请先执行 pip install -r requirements-optional.txt",
+                "未安装 opencv-python-headless，请先执行 pip install -r requirements.txt",
                 status_code=503,
                 code="FACE_NOT_CONFIGURED",
             ) from exc
@@ -94,15 +79,15 @@ class FacePresenceService:
             minNeighbors=5,
             minSize=(min_face_size, min_face_size),
         )
-        # 检测完立即丢弃图像引用，不做任何落盘；FACE_MODEL_DIR 仅为后续自定义模型预留
+        # 检测完立即丢弃图像引用，不做任何落盘
         del image, gray
         boxes = [FaceBox(x=int(x), y=int(y), w=int(w), h=int(h)) for x, y, w, h in faces]
         return FacePresenceResponse(
             present=bool(boxes),
             face_count=len(boxes),
             boxes=boxes,
-            provider=OPENCV_PROVIDER,
-            model=OPENCV_MODEL,
+            provider=PROVIDER,
+            model=MODEL,
         )
 
     def _get_cascade(self, cv2: object) -> object:

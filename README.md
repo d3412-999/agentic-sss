@@ -258,15 +258,16 @@ python main.py
 
 不启动 AI 服务也能跑通主链路，涉及 AI 的能力会降级为 `50301 AI_UNAVAILABLE`。
 
-没有大模型 Key 时，可以在 langchain_service/.env 里把 LLM_PROVIDER 改为 mock，AI 接口会返回结构完整的示例数据，便于前后端联调。
+**必须配置真实大模型**：在 `langchain_service/.env` 里填 `LLM_API_KEY`（任意 OpenAI 兼容接口，默认 DeepSeek）。未配置时 AI 评审 / 出题 / 评分直接返回 503 `LLM_NOT_CONFIGURED`，不会返回任何占位数据。
 
-**语音转写 / 在场检测（可选，答辩需要）**：默认 `ASR_PROVIDER=mock`、`FACE_PROVIDER=mock`，不装模型也能联调整条答辩链路。要切换成真实能力：
+**语音转写 / 在场检测（答辩需要）**：均为真实实现，依赖已包含在 `requirements.txt`——sherpa-onnx 中文 paraformer 模型 + OpenCV haarcascade。首次部署需下载模型到 `langchain_service/models/sherpa-onnx-paraformer-zh/`（至少含 `tokens.txt` 与 `*.onnx`）：
 
 ```bash
 cd langchain_service
-pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headless
-# 下载中文流式/离线模型到 ./models/ 并把 ASR_MODEL_DIR 指过去（含 tokens.txt 与 *.onnx）
-# .env: ASR_PROVIDER=sherpa_onnx  FACE_PROVIDER=opencv
+pip install -r requirements.txt            # 已含 sherpa-onnx / opencv-python-headless
+mkdir -p models/sherpa-onnx-paraformer-zh && cd models/sherpa-onnx-paraformer-zh
+curl -L -O https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/model.int8.onnx
+curl -L -O https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14/resolve/main/tokens.txt
 ```
 
 模型与接口细节见 [docs/defense-asr-face.md](docs/defense-asr-face.md)。
@@ -299,8 +300,8 @@ pip install -r requirements-optional.txt   # sherpa-onnx + opencv-python-headles
 | Redis 口令 | `123456` | `.env` `REDIS_PASSWORD` ↔ `application.yaml` |
 | 内部令牌 | `change-me` | `application.yaml` `sss.ai.internal-token` ↔ `langchain_service/.env` |
 | JWT 密钥 | `change-me-...` | `application.yaml`（≥ 32 字节） |
-| ASR 提供方 | `mock` | `langchain_service/.env` `ASR_PROVIDER`（`mock` / `sherpa_onnx`） |
-| 人脸在场提供方 | `mock` | `langchain_service/.env` `FACE_PROVIDER`（`mock` / `opencv`） |
+| ASR 模型目录 | `./models/sherpa-onnx-paraformer-zh` | `langchain_service/.env` `ASR_MODEL_DIR`（sherpa-onnx 中文模型） |
+| 人脸在场检测 | OpenCV haarcascade | `langchain_service/.env` `FACE_MIN_SIZE`（内置模型，无需额外文件） |
 
 完整环境变量清单见 `.env.example`。Spring Boot 不读取 `.env` 文件，它读取同名环境变量；不设置时使用 `application.yaml` 里的默认值。
 
@@ -477,7 +478,7 @@ cd vue && npm test        # node --test，30 个用例，零额外依赖
 cd backend && ./gradlew build                             # 构建后端（含 src/test 纯逻辑单测）
 cd vue && npm run build                                   # 构建前端
 cd vue && npm test                                        # 前端单测（存储层 + 上传快照，node --test）
-cd langchain_service && python -m pytest -q               # AI 服务测试（mock 模式）
+cd langchain_service && python -m pytest -q               # AI 服务测试（测试替身，无需 Key/模型）
 python backend/tools/gen_entities.py                      # 重新生成实体
 ```
 
@@ -489,12 +490,12 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 |---|---|---|
 | Backend | `./gradlew build --no-daemon` | JDK 17 + Gradle 缓存；执行 `src/test/java/.../common` 下的纯逻辑单测 |
 | Frontend | `npm ci && npm run build && npm test` | Node 20，锁定 `vue/package-lock.json`；`npm test` 跑存储层与上传快照单测（30 例） |
-| AI service | `pip install -r requirements.txt` + `python -m pytest -q` | Python 3.12，mock provider 跑接口冒烟测试，之后再做一次导入检查 |
+| AI service | `pip install -r requirements.txt` + `python -m pytest -q` | Python 3.12，测试替身跑服务/接口测试（不访问真实大模型），之后再做一次导入检查 |
 
 - 后端单测集中在 `common` 包：压缩包安全校验（`ArchiveGuard`）、AI 分数校验（`ScoreGuard`）、
   成绩数学（`GradeMath`）、CSV 单元格（`CsvUtil`）、可信代理 IP 解析（`TrustedProxyIp`）——
   这些类刻意只依赖 `java.*`，因此可以脱离 Spring 容器直接测试；
-- AI 服务测试位于 `langchain_service/tests`（29 个用例），`LLM_PROVIDER=mock` 时无需网络与 Key；
+- AI 服务测试位于 `langchain_service/tests`，使用测试替身覆盖服务逻辑与接口错误码，无需网络、Key 与 ASR 模型；
 - 并发选题、乐观锁、幂等等依赖真实 MySQL/Redis 的回归测试尚未落地，计划用 Testcontainers 补齐。
 
 配置见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
@@ -534,7 +535,7 @@ python backend/tools/gen_entities.py                      # 重新生成实体
 - 答辩主链路已实现（AI 出题、逐题录音 + ASR 转写、教师 AI 评分、摄像头「在场检测」、整场录像留存与教师回放）；**WebSocket 实时流式转写**的 Java 代理与**人脸身份识别/活体**属于下一阶段，当前是用 WAV 整段上传 + OpenCV 正脸检测（只判画面里有没有人）。
 - 答辩录像为整场 webm（画面+声音，单场上限 300MB、内存暂存后一次性上传），教师可回放/下载；录像仅用于教学复核，课程结束按学校数据管理要求清理（详见 docs/defense-asr-face.md）。
 - 若录像“有声音没画面”，通常是摄像头设备本身输出黑帧（红外/虚拟相机、镜头遮挡、隐私开关、被其他软件占用）：答辩页已提供**摄像头设备下拉切换**和**画面过暗/全黑提示**，可按提示排查。
-- 默认 `ASR_PROVIDER=mock` / `FACE_PROVIDER=mock`，真实能力需要安装 `requirements-optional.txt` 并下载模型；sherpa-onnx/opencv 真实链路需在目标机复核。
+- AI 服务不再提供 mock/占位实现：大模型必须配置 `LLM_API_KEY`，语音转写必须准备 sherpa-onnx 中文模型目录（详见 `langchain_service/README.md`）；未配置时接口明确返回 503，而不是返回示例数据。
 - 报告正文已用 PDFBox（PDF）/ Apache POI（DOCX）抽取；扫描版 PDF 若没有文本层，仍会退回“无正文”，需要 OCR 才能评分。
 - AI 评审已做提示注入防护（不可信材料包装 + 操纵话术检测）与 0~100 分数区间校验，但检测是启发式的，不能保证穷尽新措辞；最终分数仍由教师复核发布。
 - 前端令牌存放在 sessionStorage（按标签页隔离、关闭即清除），同源 XSS 仍可读取；根治需要后端 HttpOnly Cookie。

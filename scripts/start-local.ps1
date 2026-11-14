@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # start-local.ps1 — 一键启动本项目（本机模式：MySQL + Redis + AI + 后端 + 前端）
 #
 # 用法（普通 PowerShell 即可，不需要管理员）：
@@ -9,7 +9,7 @@
 # 会做：
 #   1) 检查 MySQL（本机服务，端口 3306）
 #   2) 没有 Redis 就启动便携版（D:\zzb\tools\redis）
-#   3) 启动 AI 服务（mock 模式）
+#   3) 启动 AI 服务（真实大模型 + sherpa-onnx / OpenCV，需先按 README 配置 .env 与模型）
 #   4) 启动后端（gradlew bootRun）
 #   5) 启动前端（vite dev）
 #
@@ -118,7 +118,7 @@ while ((Get-Date) -lt $deadline) {
 }
 
 Write-Host "`n===== 状态 =====" -ForegroundColor Cyan
-if ($aiOk) { Ok "AI 服务  $($ports.AiHealthUrl)  (LLM=mock, 可空跑)" } else { Warn2 'AI 服务未就绪（答辩/AI 评审会返回 50301）' }
+if ($aiOk) { Ok "AI 服务  $($ports.AiHealthUrl)  (真实模型；未配置 LLM_API_KEY 时 AI 接口返回 503)" } else { Warn2 'AI 服务未就绪（答辩/AI 评审会返回 50301）' }
 if ($backendOk) { Ok "后端     $($ports.HealthUrl)" } else { Warn2 '后端未就绪（看那个最小化的 cmd 窗口日志）' }
 if ($webOk) { Ok "前端     $($ports.FrontendUrl)" } else { Warn2 '前端未就绪' }
 Ok "Swagger  $($ports.BackendUrl)/swagger-ui.html"

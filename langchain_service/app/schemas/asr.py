@@ -20,5 +20,5 @@ class AsrTranscribeResponse(CamelModel):
     segments: list[AsrSegment] = Field(default_factory=list)
     duration_ms: int = 0
     confidence: float = 0.0
-    provider: str = "mock"
+    provider: str = "sherpa_onnx"
     model: str = ""

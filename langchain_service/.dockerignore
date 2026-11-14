@@ -1,9 +1,9 @@
-.venv
-__pycache__
-tests
-pytest.ini
-*.pyc
-data
+# 构建上下文排除：模型文件、本地 .env、测试与缓存
+models/
 .env
-.models
-models
+tests/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+data/
+*.pyc

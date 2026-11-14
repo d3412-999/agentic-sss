@@ -14,7 +14,7 @@ class AiServiceError(Exception):
 class LlmNotConfiguredError(AiServiceError):
     """大模型未配置或不可用。"""
 
-    def __init__(self, message: str = "大模型未配置，请设置 LLM_API_KEY 或切换 LLM_PROVIDER=mock") -> None:
+    def __init__(self, message: str = "大模型未配置：请设置 LLM_API_KEY（OpenAI 兼容接口）") -> None:
         super().__init__(message=message, status_code=503, code="LLM_NOT_CONFIGURED")
 
 

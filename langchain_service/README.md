@@ -39,11 +39,10 @@ langchain_service/
 │   ├── services/                   # 大模型调用与业务编排
 │   ├── rag/                        # 文档构建、本地检索、LightRAG 客户端
 │   └── utils/                      # JSON 提取、文本截断、标识符提取、提示注入防护
-├── tests/                          # 44 个用例（mock provider 可离线跑）
+├── tests/                          # 服务级测试（测试替身，不访问真实模型）
 ├── main.py                         # 本地启动入口
 ├── .env.example
-├── requirements.txt                # 基础依赖（mock 模式够用）
-└── requirements-optional.txt       # sherpa-onnx / opencv-python-headless（可选）
+├── requirements.txt                # 运行依赖（含 sherpa-onnx / opencv）
 ```
 
 ## 快速开始
@@ -56,23 +55,9 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-### 方式一：没有大模型 Key，先用 mock 跑通
+### 必填：真实大模型
 
 ```dotenv
-LLM_PROVIDER=mock
-AI_INTERNAL_TOKEN=change-me
-```
-
-```powershell
-python main.py
-```
-
-所有接口都会返回结构完整、内容固定的示例数据，适合前后端联调。
-
-### 方式二：接入真实大模型
-
-```dotenv
-LLM_PROVIDER=openai
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_API_KEY=sk-xxxx
 LLM_MODEL=deepseek-chat
@@ -174,9 +159,9 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 
 ## 语音转写与在场检测
 
-答辩场景的辅助能力：把学生作答音频转成文字，并定期检查摄像头画面里是否有人。两者默认都用 **mock provider**，
-无需安装模型即可离线联调；真实能力通过可选依赖启用（`pip install -r requirements-optional.txt`），基础
-`requirements.txt` 不变，mock 模式与全部测试都不依赖它们。
+答辩场景的辅助能力：把学生作答音频转成文字，并定期检查摄像头画面里是否有人。两者都是真实实现：
+ASR 使用 sherpa-onnx 中文 paraformer 本地模型，人脸检测使用 OpenCV 内置 haarcascade；
+依赖已包含在 `requirements.txt`（`sherpa-onnx` / `opencv-python-headless`）。
 
 | 接口 | 说明 |
 |---|---|
@@ -188,16 +173,13 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `ASR_PROVIDER` | `mock` | `mock` / `sherpa_onnx`（需可选依赖 + 本地模型） |
 | `ASR_MODEL_DIR` | `./models/sherpa-onnx-paraformer-zh` | 模型目录（`tokens.txt` + paraformer onnx 或 encoder/decoder/joiner） |
 | `ASR_LANGUAGE` | `zh-CN` | 默认语种 |
-| `FACE_PROVIDER` | `mock` | `mock` / `opencv` |
 | `FACE_MIN_SIZE` | `60` | OpenCV 最小人脸像素（只判“有人”） |
-| `FACE_MODEL_DIR` | `./models/face` | 预留目录（OpenCV haarcascade 随包内置，当前不需要文件） |
 
-- **mock 行为**：ASR 对任意非空音频返回固定中文文本 + 2 段 segments（WAV 时按真实时长）；人脸按 base64 长度
-  大于 100 视为有人，保证前后端在无模型环境也能跑通全链路。
-- **懒加载**：`sherpa_onnx` / `cv2` 只在对应 provider 命中时 import；未安装或模型缺失返回 503
+- **模型准备**：ASR 模型不随 pip 包提供，需下载 sherpa-onnx 中文 paraformer 模型（`tokens.txt` + `*.onnx`）到
+  `ASR_MODEL_DIR`；OpenCV haarcascade 随 `opencv-python-headless` 内置，无需额外文件。
+- **懒加载**：`sherpa_onnx` / `cv2` 在首次调用时加载；依赖缺失或模型目录不完整时返回 503
   `ASR_NOT_CONFIGURED` / `FACE_NOT_CONFIGURED`，非 WAV 音频返回 400 `INVALID_AUDIO`，图片非法返回 400 `INVALID_IMAGE`。
 - **隐私**：摄像头画面只在内存中检测，不写磁盘、不落库；Java 侧只记录 `present`、检测时间与未检测次数。
 
@@ -207,7 +189,7 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 |---|---|---|
 | `AI_HOST` / `AI_PORT` | `127.0.0.1` / `8000` | 监听地址与端口 |
 | `AI_INTERNAL_TOKEN` | `change-me` | 内部令牌，与后端一致 |
-| `LLM_PROVIDER` | `openai` | `openai` / `mock` |
+
 | `LLM_BASE_URL` | DeepSeek | OpenAI 兼容地址 |
 | `LLM_API_KEY` | 空 | 未配置时接口返回 503 |
 | `LLM_MODEL` | `deepseek-chat` | 模型名 |
@@ -216,12 +198,9 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 | `LIGHTRAG_BASE_URL` | `http://127.0.0.1:9621` | LightRAG 服务地址 |
 | `RAG_TOP_K` | `5` | 检索返回条数 |
 | `RAG_MAX_CODE_CHARS` | `30000` | 提示词中源码总字符上限 |
-| `ASR_PROVIDER` | `mock` | `mock` / `sherpa_onnx` |
 | `ASR_MODEL_DIR` | `./models/sherpa-onnx-paraformer-zh` | sherpa-onnx 模型目录 |
 | `ASR_LANGUAGE` | `zh-CN` | 默认语种 |
-| `FACE_PROVIDER` | `mock` | `mock` / `opencv` |
 | `FACE_MIN_SIZE` | `60` | OpenCV 最小人脸像素 |
-| `FACE_MODEL_DIR` | `./models/face` | 预留目录 |
 
 ## 测试
 
@@ -229,9 +208,10 @@ LightRAG 是可选增强项，未启动时服务仍可完整工作。
 .venv\Scripts\python -m pytest -q
 ```
 
-测试使用 `LLM_PROVIDER=mock` 与 `ASR_PROVIDER=mock` / `FACE_PROVIDER=mock`，不依赖网络、大模型 Key
-与可选模型，覆盖健康检查、鉴权、五个业务接口、后端简化入参兼容、一致性检查、提示注入防护、分数 clamp、
-ASR 整段转写 / WebSocket 流式与人脸在场检测，共 44 个用例（43 passed；可选依赖未安装时 1 条 opencv 用例自动 skip）。
+测试不访问真实大模型、不加载 ASR 模型：用 `tests/llm_doubles.py` 的测试替身覆盖出题/评分/源码/报告服务逻辑，
+用错误码用例验证未配置 Key 时返回 503、模型缺失时返回 `ASR_NOT_CONFIGURED`；人脸检测使用真实 OpenCV
+（`requirements.txt` 已包含）。覆盖健康检查、鉴权、服务层评分逻辑、一致性检查、提示注入防护、分数 clamp、
+ASR 解析/流式协议与人脸检测。
 
 ## 错误处理
 
@@ -241,16 +221,16 @@ ASR 整段转写 / WebSocket 流式与人脸在场检测，共 44 个用例（43
 | 400 | `INVALID_REQUEST` | 请求缺少必要字段 |
 | 502 | `LLM_INVOCATION_FAILED` | 大模型网络 / 超时 / 限流 |
 | 502 | `LLM_RESPONSE_INVALID` | 大模型输出不是合法 JSON 或不符合结构 |
-| 503 | `LLM_NOT_CONFIGURED` | 未配置 API Key 且未使用 mock |
+| 503 | `LLM_NOT_CONFIGURED` | 未配置 `LLM_API_KEY` |
 | 400 | `INVALID_AUDIO` / `INVALID_IMAGE` | 音频 / 图片为空或格式不支持 |
 | 500 | `ASR_FAILED` | sherpa-onnx 识别过程失败 |
 | 503 | `ASR_NOT_CONFIGURED` / `FACE_NOT_CONFIGURED` | 可选依赖未安装或模型缺失 |
 
 ## 说明
 
-- 真实大模型链路需要配置 `LLM_API_KEY`；未配置时建议先用 mock 模式联调。
+- 大模型链路必须配置 `LLM_API_KEY`；未配置时接口返回 503 `LLM_NOT_CONFIGURED`。
 - 后端已用 PDFBox / POI 抽取报告正文，扫描版 PDF 无文本层时会按空内容处理；
   接入 PDFBox / pypdf 后本服务无需修改即可按章节评审。
 - 答辩出题 / 评分、ASR 整段转写 / WebSocket 流式、人脸在场检测接口均已实现；Java 侧对 ASR/人脸接口的代理
   与 WebSocket 实时链路属于下一阶段（当前契约见 `_notes/defense-contract.md` 与 API 文档第 17/21 章）。
-- 真实 ASR / 人脸能力需要 `requirements-optional.txt`；未安装时默认 mock provider，接口与测试仍可完整运行。
+- ASR 依赖 sherpa-onnx 与本地中文模型文件（不随仓库提供），人脸检测依赖 opencv；未安装/缺模型时对应接口返回 503。

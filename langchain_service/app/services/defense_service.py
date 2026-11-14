@@ -24,7 +24,6 @@ from app.schemas.defense import (
     QuestionScore,
 )
 from app.services.llm_service import LlmService
-from app.services.mock_responses import mock_defense_evaluation, mock_defense_questions
 from app.services.scoring import (
     DEFENSE_DIMENSION_SPECS,
     clamp_score,
@@ -75,7 +74,6 @@ class DefenseService:
             schema=DefenseQuestionList,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            mock_factory=lambda: mock_defense_questions(request),
         )
         # 计分题与加分题分开截断：直接 [:count] 会把排在最后的加分题切掉，
         # 也会让「多出的题」冒充加分题，污染总分口径。
@@ -112,7 +110,6 @@ class DefenseService:
             schema=DefenseEvaluationDraft,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            mock_factory=lambda: mock_defense_evaluation(request),
         )
 
         draft = result.data
