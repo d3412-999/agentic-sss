@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+### 修复（AI 评审偶尔一直显示「评审中」）
+
+- **根因 1（AI 侧）**：真实大模型输出存在字段漂移——`problems` 用 `description` 代替 `message`、
+  `dimensions` 少了 `name/weight`、`problems` 直接给字符串数组，导致 Pydantic 校验失败并返回 502；
+- **根因 2（后端侧）**：LLM 校验异常信息长达数千字，写 `error_message`（varchar 1000）时触发 DataTruncation；
+  异常逃逸后提交物状态停在 `ANALYZING`，且没有落 `report_evaluation` 失败行，前端一直显示「AI 评审中」；
+- **修复**：
+  - `ReportProblem` / `DimensionScore` 增加容错归一化（字符串问题、description 别名、缺省 name/weight），
+    `report_aggregate` 提示词改为对象结构；
+  - 后端失败落库前统一截断到 900 字符，`fail()` 内每一步写库独立 try/catch，保证提交物状态一定回写、
+    任务一定标记 FAILED；`AsyncTaskService.markFailed` 同样截断；
+  - 实测：同一份 1MB 报告重新评审 → 任务 SUCCEEDED、报告评审 46.8 分、`review-status` 返回 finished=true。
+
 ### 移除（AI 服务的 mock / 占位实现）
 
 - **不再提供 mock provider**：`langchain_service` 删除 `mock_responses.py`、`LLM_PROVIDER` / `ASR_PROVIDER` /

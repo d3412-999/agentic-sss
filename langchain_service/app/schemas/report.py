@@ -5,7 +5,7 @@
 2. Java 后端 AiServiceClient 的简化结构：reportText / topicTitle。
 """
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.schemas.common import CamelModel, DimensionScore
 from app.schemas.materials import ReportMaterial, SubmissionFileBrief, TopicBrief
@@ -52,11 +52,31 @@ class ReportEvaluateRequest(CamelModel):
 
 
 class ReportProblem(CamelModel):
-    """报告中的问题与改进建议。"""
+    """报告中的问题与改进建议。
+
+    容错：不同模型可能把 message 写成 description/detail/text，或直接把 problems 写成字符串数组；
+    统一在解析阶段归一化，避免整份评审因为字段名漂移直接 502。
+    """
 
     section: str = ""
     message: str
     suggestion: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_problem(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {"message": value}
+        if isinstance(value, dict):
+            data = dict(value)
+            if not data.get("message"):
+                for key in ("description", "detail", "text", "msg", "issue", "problem"):
+                    candidate = data.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        data["message"] = candidate
+                        break
+            return data
+        return value
 
 
 class ReportEvaluationDraft(CamelModel):

@@ -103,8 +103,10 @@ public class AsyncTaskService {
                 .set(AsyncTask::getStatus, "FAILED")
                 .set(AsyncTask::getFinishedAt, Times.now());
         // ex.getMessage() 可能为 null / 空白：不能把空串写进 error_message（前端会显示空错误）
+        // 列宽 1000：超长消息（如 LLM 校验异常堆栈）截断后再写，否则 DataTruncation 会顶掉整个失败流程
         if (StringUtils.hasText(message)) {
-            wrapper.set(AsyncTask::getErrorMessage, message);
+            String safe = message.length() > 900 ? message.substring(0, 900) + "…" : message;
+            wrapper.set(AsyncTask::getErrorMessage, safe);
         }
         if (!apply(wrapper)) {
             log.debug("任务 {} 已进入终态，忽略 markFailed", id);

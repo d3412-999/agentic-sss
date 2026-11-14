@@ -81,6 +81,9 @@ public class AiEvaluationService {
     private final JsonCodec json;
     private final SssProperties properties;
 
+    /** error_message 列宽 1000，截断到 900 留足余量，避免 LLM 报错信息写库时把任务卡死。 */
+    private static final int DB_ERROR_MESSAGE_MAX = 900;
+
     @Async(AsyncConfig.EXECUTOR)
     public void parseAndEvaluateAsync(Long taskId, Long submissionId, Long versionId,
                                      List<Long> fileIds, String type) {
@@ -264,7 +267,23 @@ public class AiEvaluationService {
             }
         } catch (Exception ex) {
             log.error("AI evaluation failed, taskId={}", taskId, ex);
-            taskService.markFailed(taskId, ex.getMessage());
+            // 失败也要落「评审失败」状态：否则 submission 永远停在 ANALYZING，前端一直显示“评审中”
+            try {
+                Submission failedSubmission = submissionMapper.selectById(submissionId);
+                SubmissionVersion failedVersion = versionId == null ? null : versionMapper.selectById(versionId);
+                if (failedSubmission != null) {
+                    fail(taskId, failedSubmission, failedVersion, ex.getMessage(), "SOURCE".equals(type));
+                } else {
+                    taskService.markFailed(taskId, truncate(String.valueOf(ex.getMessage()), DB_ERROR_MESSAGE_MAX));
+                }
+            } catch (RuntimeException inner) {
+                log.error("记录评审失败状态时再次出错，taskId={}", taskId, inner);
+                try {
+                    taskService.markFailed(taskId, truncate(String.valueOf(ex.getMessage()), DB_ERROR_MESSAGE_MAX));
+                } catch (RuntimeException ignored) {
+                    // 任务状态写不进去也不能再抛异常，避免线程池吞掉后续日志
+                }
+            }
         }
     }
 
@@ -387,60 +406,82 @@ public class AiEvaluationService {
         }
     }
 
+    /**
+     * 落「评审失败」结果。
+     *
+     * <p>关键约束（2026-11 实测）：LLM 返回结构不合规时，异常信息可能长达数千字，
+     * 直接写 {@code error_message}（varchar 1000）会抛 DataTruncation；如果异常再逃逸，
+     * {@code submission} 会永远停在 ANALYZING，前端一直显示「AI 评审中」。
+     * 因此这里先截断，并且任何一步写库失败都不能中断后续的状态回写。</p>
+     */
     private void fail(Long taskId, Submission submission, SubmissionVersion version,
                       String message, boolean source) {
-        if (source) {
-            CodeAnalysis analysis = codeAnalysisMapper.selectOne(new LambdaQueryWrapper<CodeAnalysis>()
-                    .eq(CodeAnalysis::getSubmissionId, submission.getId()).last("limit 1"));
-            if (analysis == null) {
-                analysis = new CodeAnalysis();
-                analysis.setSubmissionId(submission.getId());
-                // version 是 MyBatis-Plus 的乐观锁列（@Version），新建时初始化为 0
-                analysis.setVersion(0);
-                analysis.setCreatedAt(Times.now());
-            }
-            analysis.setStatus("FAILED");
-            // 失败不落 0 分：0 分是「评了但答得很差」，与「没评出来」是两件事
-            analysis.setScore(null);
-            analysis.setGrade(null);
-            analysis.setModel("failed");
-            analysis.setErrorMessage(message);
-            analysis.setToolErrors(json.write(List.of(Map.of("tool", "AI", "message", message))));
-            analysis.setUpdatedAt(Times.now());
-            if (analysis.getId() == null) {
-                codeAnalysisMapper.insert(analysis);
+        String detail = (message == null || message.isBlank()) ? "AI 评审失败" : message;
+        String safeMessage = truncate(detail, DB_ERROR_MESSAGE_MAX);
+        try {
+            if (source) {
+                CodeAnalysis analysis = codeAnalysisMapper.selectOne(new LambdaQueryWrapper<CodeAnalysis>()
+                        .eq(CodeAnalysis::getSubmissionId, submission.getId()).last("limit 1"));
+                if (analysis == null) {
+                    analysis = new CodeAnalysis();
+                    analysis.setSubmissionId(submission.getId());
+                    // version 是 MyBatis-Plus 的乐观锁列（@Version），新建时初始化为 0
+                    analysis.setVersion(0);
+                    analysis.setCreatedAt(Times.now());
+                }
+                analysis.setStatus("FAILED");
+                // 失败不落 0 分：0 分是「评了但答得很差」，与「没评出来」是两件事
+                analysis.setScore(null);
+                analysis.setGrade(null);
+                analysis.setModel("failed");
+                analysis.setErrorMessage(safeMessage);
+                analysis.setToolErrors(json.write(List.of(Map.of("tool", "AI", "message", safeMessage))));
+                analysis.setUpdatedAt(Times.now());
+                if (analysis.getId() == null) {
+                    codeAnalysisMapper.insert(analysis);
+                } else {
+                    codeAnalysisMapper.updateById(analysis);
+                }
             } else {
-                codeAnalysisMapper.updateById(analysis);
+                ReportEvaluation evaluation = reportEvaluationMapper.selectOne(
+                        new LambdaQueryWrapper<ReportEvaluation>()
+                                .eq(ReportEvaluation::getSubmissionId, submission.getId()).last("limit 1"));
+                if (evaluation == null) {
+                    evaluation = new ReportEvaluation();
+                    evaluation.setSubmissionId(submission.getId());
+                    // 同上：乐观锁列，初始 0
+                    evaluation.setVersion(0);
+                    evaluation.setCreatedAt(Times.now());
+                }
+                evaluation.setStatus("FAILED");
+                evaluation.setScore(null);
+                evaluation.setGrade(null);
+                evaluation.setModel("failed");
+                evaluation.setSummary(safeMessage);
+                evaluation.setErrorMessage(safeMessage);
+                evaluation.setUpdatedAt(Times.now());
+                if (evaluation.getId() == null) {
+                    reportEvaluationMapper.insert(evaluation);
+                } else {
+                    reportEvaluationMapper.updateById(evaluation);
+                }
             }
-        } else {
-            ReportEvaluation evaluation = reportEvaluationMapper.selectOne(
-                    new LambdaQueryWrapper<ReportEvaluation>()
-                            .eq(ReportEvaluation::getSubmissionId, submission.getId()).last("limit 1"));
-            if (evaluation == null) {
-                evaluation = new ReportEvaluation();
-                evaluation.setSubmissionId(submission.getId());
-                // 同上：乐观锁列，初始 0
-                evaluation.setVersion(0);
-                evaluation.setCreatedAt(Times.now());
-            }
-            evaluation.setStatus("FAILED");
-            evaluation.setScore(null);
-            evaluation.setGrade(null);
-            evaluation.setModel("failed");
-            evaluation.setSummary(message);
-            evaluation.setErrorMessage(message);
-            evaluation.setUpdatedAt(Times.now());
-            if (evaluation.getId() == null) {
-                reportEvaluationMapper.insert(evaluation);
-            } else {
-                reportEvaluationMapper.updateById(evaluation);
-            }
+        } catch (RuntimeException ex) {
+            log.error("写入评审失败结果出错，submissionId={}, source={}", submission.getId(), source, ex);
         }
-        submission.setStatus("VALID");
-        submission.setUpdatedAt(Times.now());
-        submissionMapper.updateById(submission);
-        taskService.markFailed(taskId, message);
-        log.info("AI evaluation degraded, submissionId={}, reason={}", submission.getId(), message);
+        try {
+            submission.setStatus("VALID");
+            submission.setUpdatedAt(Times.now());
+            submissionMapper.updateById(submission);
+        } catch (RuntimeException ex) {
+            log.error("回写提交物状态出错，submissionId={}", submission.getId(), ex);
+        }
+        try {
+            taskService.markFailed(taskId, safeMessage);
+        } catch (RuntimeException ex) {
+            log.warn("标记任务失败出错，taskId={}", taskId, ex);
+        }
+        log.info("AI evaluation degraded, submissionId={}, reason={}", submission.getId(), safeMessage);
     }
 
     private void notify(Submission submission, String title) {

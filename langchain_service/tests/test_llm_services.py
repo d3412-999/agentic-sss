@@ -167,3 +167,18 @@ def test_evaluate_report_with_test_double() -> None:
     assert 0 <= response.score <= 100
     assert response.page_count == 12
     assert response.highlights == ["分层清晰"]
+def test_report_problem_tolerates_llm_field_drift() -> None:
+    """LLM 偶尔把 message 写成 description，或把 problems 写成字符串数组——解析层要能归一化。"""
+    draft = ReportEvaluationDraft.model_validate(
+        {
+            "summary": "总体一般",
+            "dimensions": [],
+            "highlights": [],
+            "problems": [
+                "纯字符串问题",
+                {"description": "字段名漂移的问题", "severity": "high"},
+                {"message": "标准问题", "section": "第 2 章", "suggestion": "建议"},
+            ],
+        }
+    )
+    assert [item.message for item in draft.problems] == ["纯字符串问题", "字段名漂移的问题", "标准问题"]

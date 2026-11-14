@@ -24,12 +24,17 @@ class CamelModel(BaseModel):
 
 
 class DimensionScore(CamelModel):
-    """单个评分维度的结果。"""
+    """单个评分维度的结果。
+
+    容错：大模型通常只返回 ``key/score/comment``；``name/weight`` 由服务端
+    ``normalize_dimensions`` 按固定维度表补齐，这里给默认值，避免整份评审因为
+    模型少写两个展示字段直接 502。
+    """
 
     key: str
-    name: str
-    weight: float
-    score: float
+    name: str = ""
+    weight: float = 0.0
+    score: float = 0.0
     comment: str = ""
 
 
