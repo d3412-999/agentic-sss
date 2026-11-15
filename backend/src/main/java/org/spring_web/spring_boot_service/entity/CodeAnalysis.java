@@ -58,6 +58,21 @@ public class CodeAnalysis {
     private String metrics;
 
     /**
+     * 混合评审行级问题（JSON 数组：RULE/TOOL/LLM 合并后的 findings）
+     */
+    private String findings;
+
+    /**
+     * 确定性扫描汇总（JSON：计数 / score_cap / verdict）
+     */
+    private String ruleSummary;
+
+    /**
+     * 评审结论：PASS / WARN / BLOCK
+     */
+    private String verdict;
+
+    /**
      * 工具执行异常
      */
     private String toolErrors;

@@ -1,5 +1,7 @@
 """源码语义评审能力：只负责设计合理性与注释文档两个维度。"""
 
+import re
+
 from app.core.config import Settings
 from app.prompts.code_review import (
     AGGREGATE_SYSTEM_PROMPT,
@@ -23,6 +25,38 @@ from app.services.scoring import CODE_DIMENSION_SPECS, clamp_score
 from app.utils.prompt_guard import append_warning, detect_injection
 from app.utils.text_utils import clip_source_material
 
+# 后端把 zip 里多个 Java 文件拼成一段 codeSnippet，这里按内嵌标记拆回去：
+#   * ArchiveGuard 的格式：`// src/main/java/A.java`
+#   * 多份合并的格式：`===== 文件：a.zip =====`
+_SNIPPET_HEADER = re.compile(
+    r"^\s*(?:={5,}\s*文件[：:]\s*(?P<merged>.+?)\s*={5,}|//\s*(?P<plain>\S+\.java))\s*$"
+)
+
+
+def split_snippet_files(text: str, fallback_path: str) -> list[SourceFile]:
+    """把拼接的 codeSnippet 拆回按文件分组的 SourceFile，保证 findings 有真实文件路径与行号。"""
+    files: list[SourceFile] = []
+    path = fallback_path or "提交的源码"
+    buffer: list[str] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        if buffer and any(line.strip() for line in buffer):
+            files.append(SourceFile(path=path, content="\n".join(buffer)))
+        buffer = []
+
+    for line in text.splitlines():
+        match = _SNIPPET_HEADER.match(line)
+        if match:
+            flush()
+            path = (match.group("merged") or match.group("plain") or path).strip()
+            continue
+        buffer.append(line)
+    flush()
+    if not files:
+        return [SourceFile(path=path, content=text)]
+    return files
+
 
 class CodeReviewService:
     """源码语义评审服务。"""
@@ -34,17 +68,11 @@ class CodeReviewService:
     async def review(self, request: CodeReviewRequest) -> CodeReviewResponse:
         """评审源码的设计与注释，返回两个维度的得分与建议。"""
         material = request
-        # Java 后端只传一段拼接好的 codeSnippet 时，包装成单个虚拟文件
+        # Java 后端只传一段拼接好的 codeSnippet 时，按文件标记拆成多个虚拟文件；
+        # 不拆的话规则 findings 的 file 会落成题目标题、行号也是拼接后的全局行号。
         if not request.java_files and request.code_snippet.strip():
             material = request.model_copy(
-                update={
-                    "java_files": [
-                        SourceFile(
-                            path=request.topic_title or "提交的源码",
-                            content=request.code_snippet,
-                        )
-                    ]
-                }
+                update={"java_files": split_snippet_files(request.code_snippet, request.topic_title)}
             )
 
         source = clip_source_material(

@@ -8,7 +8,7 @@
  *   <li>跑挂了：显示失败原因 + 重新触发，不会把用户留在加载态。</li>
  * </ul>
  */
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import Icon from '../Icon.vue'
 import { useReviewStatus } from '../../composables/useReviewStatus'
 import { elapsedText, shouldShowRefreshHint } from '../../utils/reviewPoll'
@@ -38,6 +38,49 @@ const {
   () => props.submissionId,
   { onFinished: (data) => emit('finished', data) },
 )
+
+const SEVERITY_META = {
+  CRITICAL: { label: '严重', tone: 'danger' },
+  HIGH: { label: '高', tone: 'danger' },
+  MEDIUM: { label: '中', tone: 'warn' },
+  LOW: { label: '低', tone: 'info' },
+  INFO: { label: '提示', tone: '' },
+}
+const VERDICT_META = {
+  BLOCK: { label: '阻断 · 需修复', tone: 'danger' },
+  WARN: { label: '有风险', tone: 'warn' },
+  PASS: { label: '通过', tone: 'ok' },
+}
+const SOURCE_LABEL = { RULE: '规则', TOOL: '静态工具', LLM: '语义补充' }
+
+const sourceFindings = computed(() => {
+  const raw = status.value?.source?.findings
+  return Array.isArray(raw) ? raw : []
+})
+const sourceVerdict = computed(() => status.value?.source?.verdict || '')
+const ruleSummary = computed(() => {
+  const raw = status.value?.source?.ruleSummary
+  return raw && typeof raw === 'object' ? raw : null
+})
+const groupedFindings = computed(() => {
+  const groups = new Map()
+  for (const item of sourceFindings.value) {
+    const file = item?.file || '（未标注文件）'
+    if (!groups.has(file)) groups.set(file, [])
+    groups.get(file).push(item)
+  }
+  return [...groups.entries()].map(([file, items]) => ({ file, items }))
+})
+
+function severityMeta(value) {
+  return SEVERITY_META[String(value || '').toUpperCase()] || { label: value || '问题', tone: '' }
+}
+function verdictMeta(value) {
+  return VERDICT_META[String(value || '').toUpperCase()] || null
+}
+function sourceLabel(value) {
+  return SOURCE_LABEL[String(value || '').toUpperCase()] || value || ''
+}
 
 async function doRetry(target) {
   try {
@@ -85,6 +128,50 @@ onMounted(start)
           </span>
         </div>
         <div class="small dim" style="margin-top: 4px">{{ stage.detail }}</div>
+      </div>
+
+      <div v-if="sourceFindings.length" class="findings">
+        <div class="row" style="gap: 8px; align-items: center">
+          <Icon name="code" :size="14" />
+          <strong>源码评审明细</strong>
+          <span v-if="verdictMeta(sourceVerdict)" class="pill" :class="`pill--${verdictMeta(sourceVerdict).tone}`">
+            {{ verdictMeta(sourceVerdict).label }}
+          </span>
+          <span class="spacer" />
+          <span v-if="ruleSummary" class="small dim">
+            共 {{ ruleSummary.total ?? sourceFindings.length }} 条
+            <template v-if="ruleSummary.critical"> · 严重 {{ ruleSummary.critical }}</template>
+            <template v-if="ruleSummary.high"> · 高 {{ ruleSummary.high }}</template>
+            <template v-if="ruleSummary.medium"> · 中 {{ ruleSummary.medium }}</template>
+            <template v-if="ruleSummary.low"> · 低 {{ ruleSummary.low }}</template>
+          </span>
+        </div>
+        <div class="small dim" style="margin-top: 2px">
+          规则引擎 + 静态工具 + LLM 语义补充，按文件分组；行号可对照源码查看。
+        </div>
+
+        <details v-for="(group, index) in groupedFindings" :key="group.file" class="finding-file" :open="index === 0">
+          <summary>
+            <Icon name="file" :size="13" />
+            <span class="mono">{{ group.file }}</span>
+            <span class="pill pill--info">{{ group.items.length }} 条</span>
+          </summary>
+          <ul class="finding-list">
+            <li v-for="(item, itemIndex) in group.items" :key="`${group.file}-${itemIndex}`" class="finding">
+              <div class="finding__head">
+                <span class="pill" :class="`pill--${severityMeta(item.severity).tone}`">
+                  {{ severityMeta(item.severity).label }}
+                </span>
+                <span class="mono finding__loc">L{{ item.line ?? '?' }}</span>
+                <strong class="finding__title">{{ item.title || item.message || '代码问题' }}</strong>
+                <span v-if="item.source" class="small dim">{{ sourceLabel(item.source) }}</span>
+              </div>
+              <div v-if="item.message && item.message !== item.title" class="small">{{ item.message }}</div>
+              <div v-if="item.suggestion" class="small dim" style="margin-top: 2px">建议：{{ item.suggestion }}</div>
+              <code v-if="item.evidence" class="finding__evidence">{{ item.evidence }}</code>
+            </li>
+          </ul>
+        </details>
       </div>
 
       <div v-if="overall.running" class="alert alert--info" style="align-items: flex-start">
@@ -135,5 +222,78 @@ onMounted(start)
   border: 1px solid var(--line);
   border-radius: var(--r);
   background: var(--surface-2);
+}
+
+.findings {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+
+.finding-file {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 6px 10px;
+  background: var(--surface);
+}
+
+.finding-file summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.finding-file summary::-webkit-details-marker {
+  display: none;
+}
+
+.finding-list {
+  margin: 8px 0 2px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.finding {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+}
+
+.finding__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.finding__loc {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.finding__title {
+  font-size: 13px;
+}
+
+.finding__evidence {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-radius: 6px;
+  background: var(--surface-3, rgba(0, 0, 0, 0.28));
+  color: var(--text-2);
 }
 </style>

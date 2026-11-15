@@ -167,7 +167,10 @@ public final class CommonDtos {
             String error,
             boolean retryable,
             OffsetDateTime updatedAt,
-            String taskId) {
+            String taskId,
+            Object findings,
+            Object ruleSummary,
+            String verdict) {
     }
 
     /**

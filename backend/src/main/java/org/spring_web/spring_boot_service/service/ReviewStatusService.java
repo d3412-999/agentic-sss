@@ -42,6 +42,7 @@ public class ReviewStatusService {
     private final ReportEvaluationMapper reportEvaluationMapper;
     private final AsyncTaskMapper taskMapper;
     private final SubmissionService submissionService;
+    private final JsonCodec json;
 
     /**
      * 以任意一个提交物 ID 为入口，返回该选题下源码与报告的完整状态。
@@ -87,7 +88,7 @@ public class ReviewStatusService {
     private CommonDtos.ReviewStageVO stage(Submission submission) {
         if (submission == null) {
             return new CommonDtos.ReviewStageVO(null, null, "MISSING", null, null, null,
-                    null, false, null, null);
+                    null, false, null, null, null, null, null);
         }
         boolean source = "SOURCE".equals(submission.getType());
         String taskId = latestTaskId(submission.getId(), source ? CODE_TASK : REPORT_TASK);
@@ -106,7 +107,10 @@ public class ReviewStatusService {
             return new CommonDtos.ReviewStageVO(
                     String.valueOf(submission.getId()), "SOURCE", analysis.getStatus(),
                     analysis.getScore(), analysis.getGrade(), analysis.getSummary(), error,
-                    failed, Times.offset(analysis.getUpdatedAt()), taskId);
+                    failed, Times.offset(analysis.getUpdatedAt()), taskId,
+                    json.object(analysis.getFindings()),
+                    json.object(analysis.getRuleSummary()),
+                    analysis.getVerdict());
         }
 
         ReportEvaluation evaluation = reportEvaluationMapper.selectOne(
@@ -123,7 +127,8 @@ public class ReviewStatusService {
         return new CommonDtos.ReviewStageVO(
                 String.valueOf(submission.getId()), "REPORT", evaluation.getStatus(),
                 evaluation.getScore(), evaluation.getGrade(), evaluation.getSummary(), error,
-                failed, Times.offset(evaluation.getUpdatedAt()), taskId);
+                failed, Times.offset(evaluation.getUpdatedAt()), taskId,
+                null, null, null);
     }
 
     /**
@@ -140,7 +145,8 @@ public class ReviewStatusService {
         return new CommonDtos.ReviewStageVO(
                 String.valueOf(submission.getId()), submission.getType(), status,
                 null, null, null, error, "FAILED".equals(status),
-                Times.offset(submission.getUpdatedAt()), taskId);
+                Times.offset(submission.getUpdatedAt()), taskId,
+                null, null, null);
     }
 
     /**

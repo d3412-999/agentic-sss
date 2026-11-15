@@ -241,6 +241,10 @@ public class AiEvaluationService {
                     taskService.markProgress(taskId, 75);
                     // reduce：把各份摘要汇总成总分与总体结论（不送原文，不会爆上下文）
                     response = aggregate(materials, base, source);
+                    // 混合评审：aggregate 只返回汇总，行级 findings 在各份的 review 里，必须合并回最终响应
+                    if (source) {
+                        response = mergePerFileFindings(response, materials);
+                    }
                 } else {
                     response = mergedReview(materials, base, source);
                 }
@@ -309,6 +313,11 @@ public class AiEvaluationService {
             analysis.setScore(score);
             analysis.setSummary(summary);
             analysis.setMetrics(json.write(dimensions));
+            // 混合评审：规则/工具/LLM 合并后的行级问题与确定性结论一起落库，前端可展示行级明细
+            analysis.setFindings(json.write(response.getOrDefault("findings", List.of())));
+            analysis.setRuleSummary(json.write(response.getOrDefault("ruleSummary", Map.of())));
+            Object verdict = response.get("verdict");
+            analysis.setVerdict(verdict == null ? null : String.valueOf(verdict));
             analysis.setModel(model);
             // 成功必须清空上一次失败留下的原因，否则前端会同时看到「已完成」和一条旧错误
             analysis.setErrorMessage(null);
@@ -593,8 +602,7 @@ public class AiEvaluationService {
 
     /** reduce 阶段：只送各份摘要，不送原文，因此不会撞上下文上限。 */
     private Map<String, Object> aggregate(List<FileMaterial> materials, Map<String, Object> base,
-                                          boolean source) {
-        Map<String, Object> payload = new LinkedHashMap<>(base);
+                                          boolean source) {        Map<String, Object> payload = new LinkedHashMap<>(base);
         List<Map<String, Object>> briefs = new ArrayList<>();
         for (FileMaterial material : materials) {
             Map<String, Object> brief = new LinkedHashMap<>();
@@ -614,6 +622,105 @@ public class AiEvaluationService {
         }
         payload.put("files", briefs);
         return source ? aiClient.aggregateCode(payload) : aiClient.aggregateReport(payload);
+    }
+
+    /**
+     * 把各份评审响应里的 findings / ruleSummary / verdict 合并回汇总响应。
+     *
+     * <p>分文件模式下最终 response 来自 aggregate，它只带汇总分与摘要；
+     * 不合并的话，前端永远看不到行级问题（2026-11 实测：规则命中被 reduce 丢掉）。</p>
+     */
+    private Map<String, Object> mergePerFileFindings(Map<String, Object> response,
+                                                     List<FileMaterial> materials) {
+        List<Object> findings = new ArrayList<>();
+        int critical = 0;
+        int high = 0;
+        int medium = 0;
+        int low = 0;
+        Map<String, Integer> byRule = new LinkedHashMap<>();
+        BigDecimal cap = null;
+        String verdict = "PASS";
+        for (FileMaterial material : materials) {
+            if (material.review == null) {
+                continue;
+            }
+            Object rawFindings = material.review.get("findings");
+            if (rawFindings instanceof List<?> list) {
+                findings.addAll(list);
+            }
+            Object rawSummary = material.review.get("ruleSummary");
+            if (rawSummary instanceof Map<?, ?> ruleSummary) {
+                critical += intOf(ruleSummary.get("critical"));
+                high += intOf(ruleSummary.get("high"));
+                medium += intOf(ruleSummary.get("medium"));
+                low += intOf(ruleSummary.get("low"));
+                Object rawByRule = ruleSummary.get("byRule");
+                if (rawByRule instanceof Map<?, ?> ruleMap) {
+                    for (Map.Entry<?, ?> entry : ruleMap.entrySet()) {
+                        byRule.merge(String.valueOf(entry.getKey()), intOf(entry.getValue()), Integer::sum);
+                    }
+                }
+                Object rawCap = ruleSummary.get("scoreCap");
+                if (rawCap instanceof Number number) {
+                    BigDecimal value = BigDecimal.valueOf(number.doubleValue());
+                    cap = cap == null || value.compareTo(cap) < 0 ? value : cap;
+                }
+                verdict = worseVerdict(verdict, textOf(ruleSummary.get("verdict")));
+            }
+            verdict = worseVerdict(verdict, textOf(material.review.get("verdict")));
+        }
+        if (findings.isEmpty()) {
+            return response;
+        }
+        Map<String, Object> merged = new LinkedHashMap<>(response);
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("total", findings.size());
+        summary.put("critical", critical);
+        summary.put("high", high);
+        summary.put("medium", medium);
+        summary.put("low", low);
+        summary.put("byRule", byRule);
+        summary.put("scoreCap", cap);
+        summary.put("verdict", verdict);
+        merged.put("findings", findings);
+        merged.put("ruleSummary", summary);
+        merged.put("verdict", verdict);
+        if (cap != null) {
+            BigDecimal score = ScoreGuard.parse(merged.get("score"));
+            if (score != null && score.compareTo(cap) > 0) {
+                merged.put("score", cap);
+                merged.put("summary", textOf(merged.get("summary"))
+                        + "\n\n确定性规则命中 " + (critical + high) + " 项高严重问题，综合分按规则上限封顶为 " + cap + " 分。");
+            }
+        }
+        return merged;
+    }
+
+    private int intOf(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    private String textOf(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String worseVerdict(String left, String right) {
+        return rankOf(right) > rankOf(left) ? right : left;
+    }
+
+    private int rankOf(String verdict) {
+        return switch (verdict == null ? "" : verdict) {
+            case "BLOCK" -> 2;
+            case "WARN" -> 1;
+            default -> 0;
+        };
     }
 
     /**

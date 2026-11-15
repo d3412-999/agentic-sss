@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+### 新增（前端行级 findings 展示 + 后端落库）
+
+- **落库**：Flyway `V14` 给 `code_analysis` 增加 `findings` / `rule_summary` / `verdict`；
+  AI 评审成功后把规则/工具/LLM 三路 `findings` 与 `verdict` 一起写库；
+- **接口**：`GET /api/v1/submissions/{id}/review-status` 的 `source` 阶段新增
+  `findings` / `ruleSummary` / `verdict`，前端无需额外请求；
+- **修复**：分文件评审（`reviewEach + aggregate`）时 aggregate 只返回汇总，行级 findings
+  在每份 review 里会被丢掉——后端现在会在 reduce 后把各份 findings/规则汇总/verdict 合并回最终响应，
+  并重新应用规则分数封顶；
+- **前端**：「AI 评审状态」面板新增「源码评审明细」：verdict 徽标、严重度计数、
+  按文件分组的行号问题、规则/工具/语义来源、修复建议与代码证据；行号定位到真实 zip 内文件路径
+  （AI 侧按 `// path` / `===== 文件：... =====` 标记拆分 codeSnippet）；
+- **实测**：含 SQL 注入、硬编码口令、空 catch、System.exit 的测试源码 → 15 条 findings、
+  `verdict=BLOCK`、分数按规则封顶，页面正常展示；AI 服务 64 passed。
+
 ### 新增（源码评审混合架构：确定性规则 + LLM，参考 alibaba/open-code-review）
 
 - **确定性规则侧**：新增 `app/review/java_rules.py`，内置 10+ 条可解释 Java 规则（SQL 拼接注入、硬编码口令、

@@ -119,3 +119,19 @@ def test_code_snippet_only_payload_is_scanned() -> None:
     fake = FakeLlm(_draft(design=80, doc=70))
     response = asyncio.run(CodeReviewService(SETTINGS, fake).review(request))
     assert any(item.rule_id == "SYSTEM_EXIT" for item in response.findings)
+
+
+def test_code_snippet_with_archive_guard_markers_keeps_real_paths() -> None:
+    """ArchiveGuard 的 `// 文件路径` 头必须拆回原文件，否则前端行级展示定位不到源码。"""
+    snippet = (
+        "// src/main/java/com/example/BadService.java\n"
+        "public class BadService {\n"
+        "  void f() { System.exit(1); }\n"
+        "}\n"
+    )
+    request = CodeReviewRequest(submission_id="s1", code_snippet=snippet)
+    fake = FakeLlm(_draft(design=80, doc=70))
+    response = asyncio.run(CodeReviewService(SETTINGS, fake).review(request))
+    exit_finding = next(item for item in response.findings if item.rule_id == "SYSTEM_EXIT")
+    assert exit_finding.file == "src/main/java/com/example/BadService.java"
+    assert exit_finding.line == 2
