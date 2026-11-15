@@ -6,11 +6,13 @@ from app.services.llm_service import LlmResult
 
 
 class FakeLlm:
-    """假的 LlmService：直接返回预先构造的 Pydantic 草稿。"""
+    """假的 LlmService：直接返回预先构造的 Pydantic 草稿，并记录提示词。"""
 
     def __init__(self, data: Any) -> None:
         self._data = data
         self.tasks: list[str] = []
+        self.prompts: list[str] = []
+        self.systems: list[str] = []
 
     async def generate_json(
         self,
@@ -21,6 +23,8 @@ class FakeLlm:
         user_prompt: str,
     ) -> LlmResult:
         self.tasks.append(task)
+        self.prompts.append(user_prompt)
+        self.systems.append(system_prompt)
         data = self._data(task) if callable(self._data) else self._data
         if not isinstance(data, schema):
             data = schema.model_validate(data)

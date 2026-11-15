@@ -23,6 +23,39 @@ class CodeReviewRequest(SourceMaterial):
     source_files: list[SubmissionFileBrief] = Field(default_factory=list)
 
 
+class CodeFinding(CamelModel):
+    """一条可定位的代码问题（混合评审：规则/工具/LLM 三路共用同一结构）。
+
+    与 open-code-review 的 line-level finding 对齐：文件 + 行号 + 严重度 + 证据 + 修复建议，
+    规则侧置信度固定为 1.0，启发式/LLM 侧可低于 1.0。
+    """
+
+    rule_id: str = ""
+    title: str = ""
+    message: str = ""
+    severity: str = "MEDIUM"
+    file: str = ""
+    line: int | None = None
+    evidence: str = ""
+    suggestion: str = ""
+    # RULE（确定性规则）/ TOOL（PMD/Checkstyle 等）/ LLM（语义评审补充）
+    source: str = "RULE"
+    confidence: float = 1.0
+
+
+class RuleSummary(CamelModel):
+    """确定性扫描汇总：计数 + 分数上限 + 阻断建议。"""
+
+    total: int = 0
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    by_rule: dict[str, int] = Field(default_factory=dict)
+    score_cap: float | None = None
+    verdict: str = "PASS"
+
+
 class CodeReviewDraft(CamelModel):
     """大模型输出的源码评审草稿。"""
 
@@ -32,6 +65,8 @@ class CodeReviewDraft(CamelModel):
     doc_comment: str = ""
     suggestions: list[str] = Field(default_factory=list)
     summary: str = ""
+    # 混合架构：LLM 在规则已命中的问题上不再重复，可补充语义类 finding（可选、允许为空）
+    findings: list[CodeFinding] = Field(default_factory=list)
 
 
 class FileReviewBrief(CamelModel):
@@ -74,4 +109,8 @@ class CodeReviewResponse(CamelModel):
     dimensions: list[DimensionScore] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     problems: list[str] = Field(default_factory=list)
+    # 混合评审产出：规则 + 工具 + LLM 合并后的行级 findings 与确定性汇总
+    findings: list[CodeFinding] = Field(default_factory=list)
+    rule_summary: RuleSummary = Field(default_factory=RuleSummary)
+    verdict: str = "PASS"
     summary: str = ""

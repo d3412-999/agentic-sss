@@ -7,11 +7,14 @@ from app.prompts.code_review import (
     build_aggregate_user_prompt,
     build_user_prompt,
 )
+from app.review.java_rules import merge_findings, scan_java_files, summarize, tool_findings
 from app.schemas.code import (
     CodeAggregateRequest,
+    CodeFinding,
     CodeReviewDraft,
     CodeReviewRequest,
     CodeReviewResponse,
+    RuleSummary,
 )
 from app.schemas.common import DimensionScore
 from app.schemas.materials import SourceFile
@@ -81,11 +84,16 @@ class CodeReviewService:
         )
         detections = detect_injection(materials_text)
 
+        # ---- 混合架构的确定性一侧：规则引擎 + 工具问题 ----
+        rule_hits = scan_java_files(clipped_request.java_files)
+        tool_hits = tool_findings(clipped_request.issues)
+        deterministic_findings = merge_findings(rule_hits, tool_hits)
+
         result = await self._llm.generate_json(
             task="code_review",
             schema=CodeReviewDraft,
             system_prompt=SYSTEM_PROMPT,
-            user_prompt=build_user_prompt(clipped_request),
+            user_prompt=build_user_prompt(clipped_request, deterministic_findings),
         )
         draft = result.data
 
@@ -104,13 +112,54 @@ class CodeReviewService:
         # 两个分项先各自 clamp 再合成，避免 LLM 返回 150/-20 之类的越界值污染成绩
         score = clamp_score(clamp_score(draft.design_score) * 0.6 + clamp_score(draft.doc_score) * 0.4)
 
+        # ---- 混合架构的 LLM 补充 findings：只保留规则未覆盖的语义问题 ----
+        llm_findings: list[CodeFinding] = []
+        for item in draft.findings:
+            severity = (item.severity or "").upper()
+            if severity not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}:
+                severity = "MEDIUM"
+            rule_id = (item.rule_id or "SEMANTIC").strip()
+            if not rule_id.upper().startswith("SEMANTIC"):
+                rule_id = f"SEMANTIC_{rule_id.upper()}"
+            llm_findings.append(
+                item.model_copy(
+                    update={
+                        "rule_id": rule_id,
+                        "severity": severity,
+                        "source": "LLM",
+                        "confidence": min(max(item.confidence or 0.7, 0.1), 1.0),
+                    }
+                )
+            )
+        findings = merge_findings(deterministic_findings, llm_findings)
+        rule_summary: RuleSummary = summarize(findings)
+
+        # ---- 混合评分：确定性高严重问题给综合分封顶，规则不只停留在提示 ----
+        summary_text = draft.summary
+        cap = rule_summary.score_cap
+        if cap is not None and score > cap:
+            score = clamp_score(cap)
+            summary_text += (
+                f"\n\n确定性规则命中 {rule_summary.critical} 个 CRITICAL、{rule_summary.high} 个 HIGH 问题，"
+                f"综合分按规则上限封顶为 {cap:.0f} 分。"
+            )
+
+        problem_lines = [
+            f"{item.file}:{item.line or '?'} [{item.severity}] {item.message}"
+            for item in findings[:10]
+        ]
+
         return CodeReviewResponse(
             submission_id=request.submission_id,
             score=score,
             model=result.model,
             dimensions=dimensions,
             suggestions=draft.suggestions,
-            summary=append_warning(draft.summary, detections),
+            problems=problem_lines,
+            findings=findings[:50],
+            rule_summary=rule_summary,
+            verdict=rule_summary.verdict,
+            summary=append_warning(summary_text, detections),
         )
 
     async def aggregate(self, request: CodeAggregateRequest) -> CodeReviewResponse:

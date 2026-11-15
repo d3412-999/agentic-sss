@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+### 新增（源码评审混合架构：确定性规则 + LLM，参考 alibaba/open-code-review）
+
+- **确定性规则侧**：新增 `app/review/java_rules.py`，内置 10+ 条可解释 Java 规则（SQL 拼接注入、硬编码口令、
+  空 catch、宽泛 catch、`System.exit`、`printStackTrace`、`Thread.sleep`、未关闭资源、`System.out`、TODO、超大文件），
+  把 PMD/Checkstyle 等工具问题统一映射成带 `file/line/severity/evidence` 的 `CodeFinding`；
+- **LLM 只做语义补充**：规则命中作为「事实证据」注入提示词，LLM 不再重复描述规则问题，只补充规则未覆盖的
+  语义 findings（`SEMANTIC_*`）；
+- **混合评分**：确定性 CRITICAL/HIGH 给综合分封顶（CRITICAL→45、2×HIGH→60、1×HIGH→70、
+  4×MEDIUM→80、2×MEDIUM→88），封顶原因写入 summary，规则不再只是提示；
+- **响应结构**：`CodeReviewResponse` 新增 `findings`（三路合并去重后的行级问题）、
+  `ruleSummary`（计数/上限/verdict）、`verdict`（PASS/WARN/BLOCK）；
+- **测试**：新增规则引擎 9 例 + 混合服务 5 例，AI 服务 63 passed。
+
 ### 修复（AI 评审偶尔一直显示「评审中」）
 
 - **根因 1（AI 侧）**：真实大模型输出存在字段漂移——`problems` 用 `description` 代替 `message`、
