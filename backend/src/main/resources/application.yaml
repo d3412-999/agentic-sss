@@ -96,13 +96,7 @@ sss:
     max-batch-size: ${TEACHER_BATCH_MAX:100}
 
   student:
-    # 新建学生账号的初始密码策略：
-    #   STUDENT_NO（默认）= 密码即学号，教师不必逐个告知；
-    #   FIXED            = 统一用下面的 default-password。
-    # 两种模式都会置 must_change_password=1，首次登录强制改密。
-    default-password-mode: ${STUDENT_PASSWORD_MODE:STUDENT_NO}
-    # 仅在 default-password-mode=FIXED 时生效；前端不展示、不下发该值。
-    default-password: ${STUDENT_DEFAULT_PASSWORD:${TEACHER_DEFAULT_PASSWORD:ChangeMe123!}}
+    # 学生初始密码固定为「学号」，首次登录强制改密；不支持统一默认密码回退。
     # 名单导入限额：单个文件 2MB、单次 500 条；.doc 提示另存为 .docx / .xlsx
     import-max-file-bytes: ${STUDENT_IMPORT_MAX_FILE:2097152}
     import-max-rows: ${STUDENT_IMPORT_MAX_ROWS:500}

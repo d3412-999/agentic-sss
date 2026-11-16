@@ -645,9 +645,8 @@ csv 先按 UTF-8 严格解码，失败回退 GBK。
 某批抛异常时自动退回**逐行事务**，把失败精确到行，不让同批其他行陪葬。
 同一 `Idempotency-Key` 重复提交返回 `40902`；换 key 再提交同一批只会全部 `SKIPPED`（不产生重复账号或重复关联）。
 
-**初始密码**：默认 `密码 = 学号`（`sss.student.default-password-mode=STUDENT_NO`），
-一律置 `must_change_password=1`，首次登录强制改密；接口**不返回**密码。
-改成 `FIXED` 时所有新账号使用 `sss.student.default-password`。
+**初始密码**：固定 `密码 = 学号`，一律置 `must_change_password=1`，首次登录强制改密；
+接口**不返回**密码，也不再支持统一的 `STUDENT_DEFAULT_PASSWORD` 回退。
 
 ### 5.5.1 批量移除
 

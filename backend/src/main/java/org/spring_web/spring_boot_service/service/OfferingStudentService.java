@@ -36,8 +36,8 @@ import org.springframework.util.StringUtils;
  * 开课学生名单。账号按学号全局复用：同一学生在多个开课里只有一条 sys_user，
  * 只新增 offering_student 关系，避免重复账号。
  *
- * <p><b>账号密码策略</b>：学生账号统一使用 {@code sss.student.default-password}
- * （默认与教师初始密码一致），建号时置 {@code must_change_password=1} 强制首次改密。
+ * <p><b>账号密码策略</b>：学生账号由教师名单导入/新建时，初始密码固定为「学号」，
+ * 建号后置 {@code must_change_password=1} 强制首次改密，避免统一弱口令被撞库。
  * 系统不再生成、也不再回传「一次性初始密码」——教师不需要记录密码，名单里也不展示密码。</p>
  *
  * <p><b>一对多</b>：一个教学班对应多条 offering_student，一个学生可以同时存在于多个教学班；
@@ -201,7 +201,7 @@ public class OfferingStudentService {
         SysUser user = BizAssert.found(userMapper.selectById(uid), "学生");
         SysUser patch = new SysUser();
         patch.setId(uid);
-        // 重置回「初始密码」，与建号保持同一套语义（默认即学号）
+        // 重置回「初始密码」，与建号保持同一套语义：固定为学号
         patch.setPasswordHash(passwordEncoder.encode(initialPassword(
                 StringUtils.hasText(user.getStudentNo()) ? user.getStudentNo() : user.getUsername())));
         patch.setMustChangePassword(1);
@@ -210,7 +210,7 @@ public class OfferingStudentService {
         userMapper.bumpTokenVersion(uid);
         auditLog.record("STUDENT_RESET_PASSWORD", "USER", uid, null,
                 Map.of("studentNo", user.getStudentNo() == null ? "" : user.getStudentNo()),
-                "教师将学生密码重置为统一默认密码");
+                "教师将学生密码重置为学号");
     }
 
     /**
@@ -367,22 +367,13 @@ public class OfferingStudentService {
     }
 
     /**
-     * 学生初始密码。
+     * 学生初始密码：固定为学号。
      *
-     * <p>默认「密码 = 学号」（{@code sss.student.default-password-mode=STUDENT_NO}），
-     * 与校园惯例一致，教师不必再逐个告知密码；如需回到所有新账号统一密码的旧行为，
-     * 把该配置改成 {@code FIXED} 并设置 {@code sss.student.default-password}。</p>
-     *
-     * <p>无论哪种模式，建号都会置 {@code must_change_password=1}，首次登录强制改密，
-     * 所以「密码=学号」只是临时口令，不会被长期使用。</p>
+     * <p>与校园惯例一致，教师不必再逐个告知密码；建号后置
+     * {@code must_change_password=1}，首次登录强制改密，因此学号只是临时口令。
+     * 不再提供「统一默认密码」回退，避免部署时误配成弱口令。</p>
      */
     public String initialPassword(String studentNo) {
-        if (properties.getStudent().getDefaultPasswordMode() == SssProperties.PasswordMode.FIXED) {
-            String password = properties.getStudent().getDefaultPassword();
-            BizAssert.param(StringUtils.hasText(password),
-                    "未配置学生默认密码，请设置 sss.student.default-password");
-            return password;
-        }
         BizAssert.param(StringUtils.hasText(studentNo), "学号为空，无法生成初始密码");
         return studentNo;
     }

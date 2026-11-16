@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     一键启动本地开发环境：清残留 -> 起后端 -> 等健康检查 -> 起前端。
 
@@ -63,8 +63,7 @@ $rootLower  = $root.ToLowerInvariant()
 $credentialKeys = @(
     'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_ROOT_PASSWORD',
     'REDIS_HOST', 'REDIS_PORT', 'REDIS_PASSWORD',
-    'JWT_SECRET', 'TEACHER_DEFAULT_PASSWORD', 'STUDENT_DEFAULT_PASSWORD',
-    'STUDENT_PASSWORD_MODE'
+    'JWT_SECRET', 'TEACHER_DEFAULT_PASSWORD'
 )
 $envFile = Join-Path $root '.env'
 if (Test-Path $envFile) {

@@ -141,23 +141,14 @@ public class SssProperties {
     /**
      * 学生账号与名单导入配置。
      *
-     * <p>学生账号由教师在教学班里批量导入，不再逐个生成「一次性初始密码」：
-     * 建号时按 {@code defaultPasswordMode} 决定初始密码（默认「密码即学号」），
-     * 并置 {@code must_change_password=1}，首次登录由前端强制改密。</p>
-     *
-     * <p>{@code FIXED} 模式回退到 {@code defaultPassword}（默认与教师初始密码一致），
-     * 适合演示环境；{@code STUDENT_NO} 是本项目默认值，符合校园「初始密码=学号」的惯例。</p>
+     * <p>学生账号由教师在教学班里批量导入/新建，初始密码固定为「学号」，
+     * 并置 {@code must_change_password=1}，首次登录由前端强制改密；
+     * 不再提供统一默认密码的回退配置，避免部署时误配成弱口令。</p>
      *
      * <p>导入限额同样只在后端定义一次，前端通过 {@code GET /meta/student-import-policy} 取同一份值。</p>
      */
     @Data
     public static class Student {
-
-        /** 初始密码策略：{@code STUDENT_NO}（密码=学号）或 {@code FIXED}（统一默认密码）。 */
-        private PasswordMode defaultPasswordMode = PasswordMode.STUDENT_NO;
-
-        /** {@code FIXED} 模式下新建学生账号的统一密码；前端永不展示，只提示「首次登录需修改」。 */
-        private String defaultPassword = "123456";
 
         /** 单个导入文件的大小上限（字节）。 */
         private long importMaxFileBytes = 2L * 1024 * 1024;
@@ -168,14 +159,6 @@ public class SssProperties {
                 new ArrayList<>(List.of("xlsx", "xls", "docx", "csv"));
         /** 逐行事务的提交粒度（条），避免 500 行挤在一个长事务里。 */
         private int importChunkSize = 200;
-    }
-
-    /** 学生初始密码策略。 */
-    public enum PasswordMode {
-        /** 初始密码 = 学号（默认）。 */
-        STUDENT_NO,
-        /** 所有新账号共用 {@code sss.student.default-password}。 */
-        FIXED
     }
 
     /**

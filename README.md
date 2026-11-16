@@ -282,10 +282,8 @@ curl -L -O https://hf-mirror.com/csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14
 | `T2019008` / `T2019009` | 李文博 / 周敏 | 教师 |
 | `admin` | 系统管理员 | 管理员 |
 
-**教师在教学班里新建/导入的学生**，初始密码默认就是**学号**本身
-（`sss.student.default-password-mode=STUDENT_NO`），首次登录强制改密；
-教师端「重置密码」也会重置回学号。想改回所有新账号统一密码，把该配置设为 `FIXED`
-并把 `sss.student.default-password` 设成你要的值。
+**教师在教学班里新建/导入的学生**，初始密码固定是**学号**本身，首次登录强制改密；
+教师端「重置密码」也会重置回学号。不再支持配置统一默认密码，避免部署时误用弱口令。
 
 ## 配置
 

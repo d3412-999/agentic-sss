@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+### 调整（学生初始密码固定为学号）
+
+- 教师端「新建/批量导入学生」的初始密码固定为**学号**，并置 `must_change_password=1` 强制首次登录修改；
+  教师端「重置密码」同样回到学号；
+- 移除 `sss.student.default-password-mode` / `sss.student.default-password`（`STUDENT_PASSWORD_MODE` /
+  `STUDENT_DEFAULT_PASSWORD`）与 `PasswordMode` 枚举，避免部署时误配成统一弱口令；
+- 同步更新 README、API 接口文档、名单导入文档、`.env.example` 与 `scripts/dev-up.ps1`；
+- 注意：`V2` 演示 seed 账号（2023010101~103）仍为 `123456`，仅用于本地演示；
+  教师导入/新建的学生账号才是「密码=学号」。
+
 ### 新增（前端行级 findings 展示 + 后端落库）
 
 - **落库**：Flyway `V14` 给 `code_analysis` 增加 `findings` / `rule_summary` / `verdict`；
