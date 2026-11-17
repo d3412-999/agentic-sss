@@ -49,7 +49,7 @@ public final class AdminDtos {
             LocalDateTime lastLoginAt,
             LocalDateTime createdAt,
             List<String> permissions,
-            /** 仅「新增教师」响应返回初始密码，列表 / 编辑时为 null。 */
+            /** 仅「新增教师」响应返回初始密码（=工号），列表 / 编辑时为 null。 */
             String initialPassword) {
     }
 

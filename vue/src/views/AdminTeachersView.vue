@@ -115,8 +115,8 @@ async function submitForm() {
       credential.value = {
         title: '教师账号已创建',
         account: created?.username || form.username.trim(),
-        password: created?.initialPassword || '统一初始密码',
-        hint: '账号使用统一初始密码，请通知教师首次登录后立即修改。',
+        password: created?.initialPassword || '工号',
+        hint: '初始密码为工号（登录账号），请通知教师首次登录后立即修改。',
       }
     }
     formOpen.value = false
@@ -200,7 +200,7 @@ async function toggleStatus(row) {
 async function resetPassword(row) {
   const ok = await confirm({
     title: '重置密码',
-    message: `把「${row.name}」的密码重置为统一初始密码？该账号的旧令牌会立即失效。`,
+    message: `把「${row.name}」的密码重置为工号（登录账号）？该账号的旧令牌会立即失效。`,
     confirmText: '重置',
   })
   if (!ok) return
@@ -209,7 +209,7 @@ async function resetPassword(row) {
     credential.value = {
       title: '密码已重置',
       account: row.username,
-      password: data?.initialPassword || '统一初始密码',
+      password: data?.initialPassword || '工号',
       hint: data?.mustChangePassword ? '该账号下次登录需要修改密码。' : '',
     }
   } catch (err) {
@@ -417,7 +417,7 @@ onMounted(() => {
 
         <div v-if="!isEditing" class="alert alert--info">
           <Icon name="lock" :size="15" style="flex: none; margin-top: 2px" />
-          新账号使用统一初始密码，教师在首次登录后应立即修改。
+          新账号初始密码为工号（登录账号），教师在首次登录后应立即修改。
         </div>
         <div v-if="formError" class="alert alert--danger">
           <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />{{ formError }}

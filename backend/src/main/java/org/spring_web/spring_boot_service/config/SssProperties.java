@@ -129,12 +129,11 @@ public class SssProperties {
     /**
      * 管理员端配置。
      *
-     * <p>教师账号由管理员创建，统一使用默认初始密码并强制首次登录修改；
-     * 部署时可通过 {@code TEACHER_DEFAULT_PASSWORD} 覆盖，避免继续使用弱口令。</p>
+     * <p>教师账号由管理员创建，初始密码固定为「工号」，并强制首次登录修改；
+     * 不再提供统一默认密码配置，避免部署时误用弱口令。</p>
      */
     @Data
     public static class Admin {
-        private String defaultTeacherPassword = "123456";
         private int maxBatchSize = 100;
     }
 

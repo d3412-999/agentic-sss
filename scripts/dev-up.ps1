@@ -63,7 +63,7 @@ $rootLower  = $root.ToLowerInvariant()
 $credentialKeys = @(
     'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_ROOT_PASSWORD',
     'REDIS_HOST', 'REDIS_PORT', 'REDIS_PASSWORD',
-    'JWT_SECRET', 'TEACHER_DEFAULT_PASSWORD'
+    'JWT_SECRET'
 )
 $envFile = Join-Path $root '.env'
 if (Test-Path $envFile) {

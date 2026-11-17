@@ -7,9 +7,14 @@
 
 | 入口 | 地址 |
 |---|---|
-| **前端（推荐）** | <http://sss.101.200.131.222.nip.io/> |
-| 前端（备用域名） | <http://sss.101.200.131.222.sslip.io/> |
-| 后端健康检查（经同域 Nginx） | <http://sss.101.200.131.222.nip.io/api/v1/health> |
+| **前端（推荐 HTTPS，摄像头/麦克风可用）** | <https://sss.101.200.131.222.nip.io/> |
+| 前端（HTTP，摄像头会被浏览器禁用） | <http://sss.101.200.131.222.nip.io/> |
+| 备用域名（HTTPS） | <https://sss.101.200.131.222.sslip.io/> |
+| 后端健康检查（经同域 Nginx） | <https://sss.101.200.131.222.nip.io/api/v1/health> |
+
+> HTTPS 目前使用自签名证书：首次访问浏览器会提示「不安全」，点「高级 → 继续访问」即可；
+> 页面从 HTTP 打开时，答辩页也会提示并提供 HTTPS 链接。正式使用建议换成受信任证书。
+> 浏览器只允许在 HTTPS（或 localhost）下调用摄像头/麦克风，这是学生端摄像头的必要前提。
 
 演示账号（V2 种子数据，密码统一 `123456`）：`admin`（管理员）、`T2019008`（教师）、`2023010101`（学生）。
 
@@ -66,6 +71,14 @@ docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml up
 
 # 7. 宿主机 Nginx 反代（80 端口按 Host 匹配）
 cp deploy/nginx-agentic-sss.conf /usr/local/nginx/conf/conf.d/agentic-sss.conf
+# 7.1 HTTPS（摄像头/麦克风必须；当前用自签名证书，正式环境请换受信任证书）
+mkdir -p /usr/local/nginx/conf/ssl
+openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+  -keyout /usr/local/nginx/conf/ssl/agentic-sss.key \
+  -out /usr/local/nginx/conf/ssl/agentic-sss.crt \
+  -subj "/CN=sss.101.200.131.222.nip.io" \
+  -addext "subjectAltName=DNS:sss.101.200.131.222.nip.io,DNS:sss.101.200.131.222.sslip.io,IP:101.200.131.222"
+cp deploy/nginx-agentic-sss-ssl.conf /usr/local/nginx/conf/conf.d/agentic-sss-ssl.conf
 # 确认 nginx.conf 的 http {} 内有 include /usr/local/nginx/conf/conf.d/*.conf;
 nginx -t && nginx -s reload
 ```
@@ -93,7 +106,8 @@ docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml up
 
 1. **磁盘**：服务器根分区约 99G、已用 ~90G（剩余 ~5G），镜像/构建缓存增长后需清理
    （`docker image prune`、`docker builder prune`，不影响运行中的容器）。
-2. **HTTPS**：当前只提供 HTTP 入口；正式使用建议绑定域名并配置证书，避免登录口令明文传输。
+2. **HTTPS**：已配置 443 自签名证书（浏览器首次需手动信任），摄像头/麦克风必须走 HTTPS；
+   正式使用建议绑定域名并换 Let's Encrypt / 云厂商证书，同时避免登录口令明文传输。
 3. **安全**：服务器 root 口令已在对话中出现，部署后建议立即修改并改用 SSH key；
    `.env` 里的 `LLM_API_KEY` 是真实密钥，权限 600，且未提交仓库。
 4. 服务器原有站点（80 端口按 IP/其它 Host）保持不动；本项目只占新增 Host 与 127.0.0.1 端口。

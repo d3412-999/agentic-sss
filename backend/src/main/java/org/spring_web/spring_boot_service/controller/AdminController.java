@@ -50,7 +50,7 @@ public class AdminController {
         return Result.ok(adminService.permissions());
     }
 
-    @Operation(summary = "新增单个教师账号（统一初始密码）")
+    @Operation(summary = "新增单个教师账号（初始密码=工号）")
     @PostMapping("/teachers")
     public Result<AdminDtos.TeacherVO> create(
             @RequestBody AdminDtos.TeacherCreateRequest request) {
@@ -80,7 +80,7 @@ public class AdminController {
         return Result.ok(adminService.updateStatus(teacherId, request.status()));
     }
 
-    @Operation(summary = "重置教师密码为统一初始密码")
+    @Operation(summary = "重置教师密码为工号")
     @PostMapping("/teachers/{teacherId}/reset-password")
     public Result<AdminDtos.ResetPasswordVO> resetPassword(@PathVariable String teacherId) {
         return Result.ok(adminService.resetPassword(teacherId));

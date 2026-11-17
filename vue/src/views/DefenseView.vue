@@ -113,7 +113,8 @@ async function skipBonus(question) {
 }
 const canStart = computed(() => session.value?.status === 'READY')
 const canFinish = computed(() => session.value?.status === 'IN_PROGRESS')
-const canAnswer = computed(() => session.value?.status === 'IN_PROGRESS')
+// 只有学生能录音作答；教师即使进入同一会话也只是旁听/操作评分，绝不能替学生作答。
+const canAnswer = computed(() => isStudent.value && session.value?.status === 'IN_PROGRESS')
 const canEvaluate = computed(() => isTeacher.value && ['COMPLETED', 'EVALUATED'].includes(session.value?.status))
 const modeText = computed(() => MODE_LABEL[session.value?.mode] || session.value?.mode || '—')
 const statusHint = computed(() => {
@@ -234,10 +235,17 @@ let faceInitialized = false
 
 const canDetect = computed(() => ['READY', 'IN_PROGRESS'].includes(session.value?.status))
 
+// 摄像头只在安全上下文（HTTPS / localhost）可用；HTTP 部署时给出可点击的 HTTPS 入口。
+const secureUrl = computed(() => {
+  if (typeof window === 'undefined' || window.location.protocol !== 'http:') return ''
+  return `https://${window.location.host}${window.location.pathname}${window.location.search}`
+})
+const cameraInsecure = computed(() => Boolean(secureUrl.value))
+
 const cameraHint = computed(() => {
   if (cameraState.value === 'starting') return '摄像头启动中…'
   if (cameraState.value === 'blocked') return cameraMessage.value || '摄像头不可用'
-  if (cameraState.value === 'unsupported') return '当前浏览器不支持摄像头'
+  if (cameraState.value === 'unsupported') return cameraMessage.value || '当前浏览器不支持摄像头'
   if (cameraState.value === 'closed') return '摄像头已关闭'
   if (!canDetect.value) return '答辩进行时才需要在场检测'
   return '摄像头未开启'
@@ -470,6 +478,10 @@ async function startCamera(withAudio = false) {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     cameraState.value = 'unsupported'
     presence.value = 'unavailable'
+    cameraMessage.value =
+      typeof window !== 'undefined' && window.isSecureContext === false
+        ? '摄像头只能在 HTTPS（或 localhost）下使用，请改用 HTTPS 地址访问本系统后重试'
+        : '当前浏览器不支持摄像头，请使用最新版 Chrome / Edge'
     return
   }
   const requestSeq = ++cameraRequestSeq
@@ -1232,7 +1244,10 @@ async function doStart() {
   busy.value = 'start'
   try {
     await api.startDefense(sessionId.value)
-    toast.ok('答辩已开始', '请按题目顺序录音作答')
+    toast.ok(
+      '答辩已开始',
+      isTeacher.value ? '学生端现在可以按题目顺序录音作答' : '请按题目顺序录音作答',
+    )
     await load(true)
   } catch (err) {
     toastError(err, '开始答辩失败')
@@ -1556,6 +1571,17 @@ onBeforeUnmount(() => {
         <span>{{ statusHint.text }}</span>
       </div>
 
+      <div
+        v-if="isTeacher && ['READY', 'IN_PROGRESS'].includes(session.status)"
+        class="alert alert--info"
+        style="margin-bottom: 14px; align-items: flex-start"
+      >
+        <Icon name="lock" :size="15" style="flex: none; margin-top: 2px" />
+        <span>
+          教师视角：本页不会调用你的摄像头/麦克风，也不能替学生录音作答；可以开始/结束答辩、查看评分要点与录像。
+        </span>
+      </div>
+
       <div v-if="session.score != null" class="card card--pad" style="margin-bottom: 16px">
         <div class="row row--wrap" style="align-items: center; gap: 18px">
           <ProgressRing :value="Number(session.score) || 0" :size="72" label="答辩" tone="ok" />
@@ -1797,6 +1823,13 @@ onBeforeUnmount(() => {
             </div>
             <div class="card__body" style="display: grid; gap: 10px">
               <template v-if="isStudent">
+                <div v-if="cameraInsecure" class="alert alert--warn" style="align-items: flex-start">
+                  <Icon name="alert" :size="15" style="flex: none; margin-top: 2px" />
+                  <span>
+                    当前是 HTTP 页面，浏览器会禁止调用摄像头。请改用 HTTPS 地址访问后重试：
+                    <a :href="secureUrl" target="_blank" rel="noopener">{{ secureUrl }}</a>
+                  </span>
+                </div>
                 <div class="cam-frame">
                   <video ref="videoRef" autoplay muted playsinline />
                   <div v-if="cameraState !== 'live'" class="cam-frame__placeholder">

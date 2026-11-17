@@ -37,7 +37,7 @@ import org.springframework.util.StringUtils;
  * （教学班与学生名单、题目与选题、提交评审、成绩、答辩），等同学习通里的教师角色；
  * 管理员账号只允许访问 {@code /api/v1/admin/**}，由 SecurityConfig 兜底。</p>
  *
- * <p>教师使用统一初始密码，{@code must_change_password=1} 记录首次登录需改密；
+ * <p>教师初始密码固定为「工号」，{@code must_change_password=1} 记录首次登录需改密；
  * 重置密码与删除都会递增 tokenVersion，令已签发的令牌立即失效。</p>
  */
 @Service
@@ -108,7 +108,8 @@ public class AdminService {
 
         SysUser user = new SysUser();
         user.setUsername(username);
-        String initialPassword = defaultPassword();
+        // 教师初始密码固定为工号（登录账号），首次登录强制修改；不再使用统一弱口令。
+        String initialPassword = username;
         user.setPasswordHash(passwordEncoder.encode(initialPassword));
         user.setName(name);
         user.setRole(ROLE_TEACHER);
@@ -214,7 +215,8 @@ public class AdminService {
     @Transactional(rollbackFor = Exception.class)
     public AdminDtos.ResetPasswordVO resetPassword(String teacherId) {
         SysUser user = requireTeacher(teacherId);
-        String password = defaultPassword();
+        // 与创建保持一致：教师重置密码回到工号，首次登录强制修改。
+        String password = user.getUsername();
         userMapper.update(null, new LambdaUpdateWrapper<SysUser>()
                 .eq(SysUser::getId, user.getId())
                 .set(SysUser::getPasswordHash, passwordEncoder.encode(password))
@@ -222,7 +224,7 @@ public class AdminService {
                 .set(SysUser::getUpdatedAt, Times.now()));
         userMapper.bumpTokenVersion(user.getId());
         auditLog.record("TEACHER_RESET_PASSWORD", "USER", user.getId(), null, null,
-                "管理员重置教师初始密码");
+                "管理员重置教师初始密码为工号");
         return new AdminDtos.ResetPasswordVO(password, true);
     }
 
@@ -290,12 +292,6 @@ public class AdminService {
         BizAssert.param(email.length() <= 128, "邮箱不能超过 128 个字符");
         BizAssert.param(EMAIL_PATTERN.matcher(email).matches(), "邮箱格式不正确");
         return email;
-    }
-
-    private String defaultPassword() {
-        String password = properties.getAdmin().getDefaultTeacherPassword();
-        BizAssert.param(StringUtils.hasText(password), "未配置教师初始密码");
-        return password;
     }
 
     private static String normalize(String raw) {

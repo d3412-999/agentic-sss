@@ -91,8 +91,7 @@ sss:
     refresh-token-ttl: 7d
 
   admin:
-    # 管理员新增教师时的统一初始密码；教师首次登录会被要求修改
-    default-teacher-password: ${TEACHER_DEFAULT_PASSWORD:ChangeMe123!}
+    # 教师初始密码固定为「工号」，首次登录强制修改；不再提供统一默认密码。
     max-batch-size: ${TEACHER_BATCH_MAX:100}
 
   student:

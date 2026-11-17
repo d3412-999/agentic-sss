@@ -386,6 +386,7 @@ public class DefenseService {
                                                MultipartFile file, Long durationMs) {
         DefenseSession session = loadSession(sessionId);
         assertVisible(session);
+        assertAnsweringStudent(session);
         BizAssert.rule("IN_PROGRESS".equals(session.getStatus()), "答辩未开始或已结束，不能上传作答");
         Long qid = BizAssert.id(questionId, "questionId");
         DefenseQuestion question = BizAssert.found(questionMapper.selectById(qid), "答辩题目");
@@ -442,6 +443,7 @@ public class DefenseService {
     public DefenseDtos.SessionVO uploadVideo(String sessionId, MultipartFile file, Long durationMs) {
         DefenseSession session = loadSession(sessionId);
         assertVisible(session);
+        assertAnsweringStudent(session);
         BizAssert.rule("IN_PROGRESS".equals(session.getStatus()) || "COMPLETED".equals(session.getStatus()),
                 "当前状态不允许上传答辩录像");
         BizAssert.param(file != null && !file.isEmpty(), "录像文件不能为空");
@@ -513,6 +515,7 @@ public class DefenseService {
     public DefenseDtos.FaceCheckVO faceCheck(String sessionId, String imageBase64) {
         DefenseSession session = loadSession(sessionId);
         assertVisible(session);
+        assertAnsweringStudent(session);
         BizAssert.param(StringUtils.hasText(imageBase64), "画面内容不能为空");
         BizAssert.param(imageBase64.length() <= MAX_FACE_IMAGE_BASE64_CHARS, "画面数据过大，请降低摄像头分辨率");
         BizAssert.rule("READY".equals(session.getStatus()) || "IN_PROGRESS".equals(session.getStatus()),
@@ -854,6 +857,7 @@ public class DefenseService {
     public DefenseDtos.QuestionVO skipBonus(String sessionId, String questionId) {
         DefenseSession session = loadSession(sessionId);
         assertVisible(session);
+        assertAnsweringStudent(session);
         BizAssert.rule("IN_PROGRESS".equals(session.getStatus()), "答辩未开始或已结束，不能跳过");
         Long qid = BizAssert.id(questionId, "questionId");
         DefenseQuestion question = BizAssert.found(questionMapper.selectById(qid), "答辩题目");
@@ -1183,6 +1187,12 @@ public class DefenseService {
         boolean student = current.id().equals(session.getStudentId());
         boolean teacher = isOfferingOwner(session);
         BizAssert.forbidden(student || teacher, "答辩会话");
+    }
+
+    /** 只有该答辩会话的学生本人可以提交作答/录像/在场检测；教师只能观察与评分。 */
+    private void assertAnsweringStudent(DefenseSession session) {
+        LoginUser current = SecurityUtils.required();
+        BizAssert.forbidden(current.id().equals(session.getStudentId()), "只有学生本人可以提交答辩作答");
     }
 
     private boolean isOfferingOwner(DefenseSession session) {

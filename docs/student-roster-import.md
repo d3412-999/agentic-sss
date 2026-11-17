@@ -83,9 +83,9 @@
 ## 5. 账号规则
 
 - 登录账号 = 学号，姓名是显示名；
-- 新建账号密码 = `sss.student.default-password`（默认跟随 `TEACHER_DEFAULT_PASSWORD`，即 `123456`），并置 `must_change_password=1`；
+- 新建账号密码 = **学号**（固定规则），并置 `must_change_password=1`；
 - 前端不保存、不展示、不硬编码默认密码；名单接口也不再返回密码字段；
-- 教师「重置密码」= 重置回统一默认密码 + 递增 `token_version`（旧会话立即失效）；
+- 教师「重置密码」= 重置回学号 + 递增 `token_version`（旧会话立即失效）；
 - 首次登录由 `ForcePasswordChange.vue` 以不可关闭弹窗强制改密，改完清会话重新登录。
 
 ## 6. 关键实现
