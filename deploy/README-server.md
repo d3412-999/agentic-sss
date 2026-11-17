@@ -7,14 +7,13 @@
 
 | 入口 | 地址 |
 |---|---|
-| **前端（推荐 HTTPS，摄像头/麦克风可用）** | <https://sss.101.200.131.222.nip.io/> |
-| 前端（HTTP，摄像头会被浏览器禁用） | <http://sss.101.200.131.222.nip.io/> |
+| **前端（HTTPS，摄像头/麦克风可用）** | <https://sss.101.200.131.222.nip.io/> |
 | 备用域名（HTTPS） | <https://sss.101.200.131.222.sslip.io/> |
 | 后端健康检查（经同域 Nginx） | <https://sss.101.200.131.222.nip.io/api/v1/health> |
 
-> HTTPS 目前使用自签名证书：首次访问浏览器会提示「不安全」，点「高级 → 继续访问」即可；
-> 页面从 HTTP 打开时，答辩页也会提示并提供 HTTPS 链接。正式使用建议换成受信任证书。
-> 浏览器只允许在 HTTPS（或 localhost）下调用摄像头/麦克风，这是学生端摄像头的必要前提。
+> HTTP 访问会自动 **301 跳转到 HTTPS**；HTTPS 目前使用自签名证书，首次访问浏览器会提示「不安全」，
+> 点「高级 → 继续访问」即可。浏览器只允许在 HTTPS（或 localhost）下调用摄像头/麦克风，
+> 因此答辩必须使用 HTTPS；正式使用建议换成受信任证书（域名 + Let's Encrypt / 云厂商证书）。
 
 演示账号（V2 种子数据，密码统一 `123456`）：`admin`（管理员）、`T2019008`（教师）、`2023010101`（学生）。
 
@@ -69,7 +68,7 @@ cd /opt/agentic-sss
 docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml build
 docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml up -d
 
-# 7. 宿主机 Nginx 反代（80 端口按 Host 匹配）
+# 7. 宿主机 Nginx（80 端口按 Host 匹配后 301 跳转到 HTTPS）
 cp deploy/nginx-agentic-sss.conf /usr/local/nginx/conf/conf.d/agentic-sss.conf
 # 7.1 HTTPS（摄像头/麦克风必须；当前用自签名证书，正式环境请换受信任证书）
 mkdir -p /usr/local/nginx/conf/ssl
