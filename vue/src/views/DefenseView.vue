@@ -471,6 +471,8 @@ function sampleVideoQuality() {
  *   麦克风被拒时自动降级为 video-only：在场检测继续，逐题录音会单独申请麦克风。
  */
 async function startCamera(withAudio = false) {
+  // 教师端只查看服务端记录与录像，绝不占用本机摄像头/麦克风，避免「老师也被拉进答辩」的错觉。
+  if (!isStudent.value) return
   if (cameraState.value === 'live' || cameraState.value === 'starting') return
   if (!canDetect.value) return
   // 摄像头/麦克风授权弹窗会让窗口失焦：授权期间的 blur 不计违规
