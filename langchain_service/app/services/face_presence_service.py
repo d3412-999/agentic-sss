@@ -16,7 +16,8 @@ from app.schemas.face import FaceBox, FacePresenceResponse
 
 PROVIDER = "opencv"
 MODEL = "haarcascade_frontalface_default"
-DEFAULT_FACE_MIN_SIZE = 60
+# 摄像头画面里人脸通常只占 10%~25% 宽度；60px 下限在 320 宽截图上会让正常坐姿的人脸漏检。
+DEFAULT_FACE_MIN_SIZE = 40
 MIN_FACE_MIN_SIZE = 10
 
 
@@ -73,12 +74,7 @@ class FacePresenceService:
 
         cascade = self._get_cascade(cv2)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(min_face_size, min_face_size),
-        )
+        faces = self._detect_faces(cv2, cascade, gray, min_face_size)
         # 检测完立即丢弃图像引用，不做任何落盘
         del image, gray
         boxes = [FaceBox(x=int(x), y=int(y), w=int(w), h=int(h)) for x, y, w, h in faces]
@@ -89,6 +85,41 @@ class FacePresenceService:
             provider=PROVIDER,
             model=MODEL,
         )
+
+    @staticmethod
+    def _detect_faces(cv2: object, cascade: object, gray: object, min_size: int) -> list[tuple]:
+        """多路检测：原图 → CLAHE 均衡 → 2 倍放大，降低背光/远距离漏检。
+
+        真实摄像头场景里，学生坐着正常露出脸但只占画面 10% 左右时，固定 60px 的
+        单路 haarcascade 会大量漏检；这里把下限降到 40px 并在失败时补两路预处理。
+        """
+
+        def detect(image, scale: float = 1.0) -> list[tuple]:
+            pixel = max(MIN_FACE_MIN_SIZE, int(round(min_size * scale)))
+            found = cascade.detectMultiScale(  # type: ignore[attr-defined]
+                image,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(pixel, pixel),
+            )
+            return [
+                (int(x / scale), int(y / scale), int(w / scale), int(h / scale))
+                for x, y, w, h in found
+            ]
+
+        faces = detect(gray)
+        if faces:
+            return faces
+
+        # 背光/低对比：直方图均衡后再试一次
+        equalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)  # type: ignore[attr-defined]
+        faces = detect(equalized)
+        if faces:
+            return faces
+
+        # 人脸在画面里太小：放大 2 倍后按 2 倍尺寸再找，坐标缩回原始画面
+        enlarged = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)  # type: ignore[attr-defined]
+        return detect(enlarged, scale=2.0)
 
     def _get_cascade(self, cv2: object) -> object:
         """加载 OpenCV 内置 haarcascade（CAScade 对象缓存）。"""

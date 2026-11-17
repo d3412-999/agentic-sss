@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     asr_language: str = "zh-CN"
 
     # ---- 人脸在场检测（OpenCV haarcascade，只判"有没有人"）----
-    face_min_size: int = 60
+    # 40px 是 320~640 宽摄像头画面的实测折中：太小会漏检，太大远距离/低分辨率会误判无人。
+    face_min_size: int = 40
 
     @property
     def llm_ready(self) -> bool:

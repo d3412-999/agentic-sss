@@ -215,7 +215,8 @@ function dismissGuardWarning() {
 
 /* ---------------- 摄像头在场检测 ---------------- */
 const CAPTURE_INTERVAL_MS = 3000
-const CAPTURE_WIDTH = 320
+// 640 宽比 320 宽保留更多人脸像素：320 下正常坐姿的人脸常只有 40~60px，haarcascade 会漏检。
+const CAPTURE_WIDTH = 640
 const videoRef = ref(null)
 const cameraState = ref('idle') // idle | starting | live | blocked | unsupported | closed
 const cameraMessage = ref('')
@@ -298,7 +299,7 @@ function stopCamera() {
   if (cameraState.value === 'live' || cameraState.value === 'starting') cameraState.value = 'closed'
 }
 
-/** 抓当前视频帧，压缩成 JPEG(0.7) 的 base64（不带 data: 前缀）用于在场检测。 */
+/** 抓当前视频帧，压缩成 JPEG(0.8) 的 base64（不带 data: 前缀）用于在场检测。 */
 function captureFrameBase64() {
   const video = videoRef.value
   if (!video || !video.videoWidth) return ''
@@ -310,7 +311,7 @@ function captureFrameBase64() {
   const ctx = canvas.getContext('2d')
   if (!ctx) return ''
   ctx.drawImage(video, 0, 0, width, height)
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.8)
   return dataUrl.split(',')[1] || ''
 }
 
@@ -1858,6 +1859,13 @@ onBeforeUnmount(() => {
                   <span>
                     摄像头画面过暗或全黑（可能被遮挡、相机隐私开关关闭，或选到了红外/虚拟摄像头）：请在上方切换到正确的摄像头，或检查镜头。
                     声音仍会录制，但教师复核时看不到画面。
+                  </span>
+                </div>
+                <div v-if="cameraState === 'live' && faceMissCount > 0" class="alert alert--warn" style="align-items: flex-start">
+                  <Icon name="eye" :size="15" style="flex: none; margin-top: 2px" />
+                  <span>
+                    已连续 {{ faceMissCount }} 次未识别到人脸。如果画面里能看到自己，请正对镜头、靠近一些、打开补光，
+                    或在下方切换摄像头；检测每 3 秒一次，识别成功后计数会停止增长。
                   </span>
                 </div>
 
