@@ -37,6 +37,12 @@ public class DefenseBatchTask {
     /** 本次批量参数（并发数等） */
     private String config;
 
+    /** 批量发起的答辩时长限制（分钟） */
+    private Integer timeLimitMinutes;
+
+    /** 整批答辩截止时间 */
+    private LocalDateTime deadlineAt;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime finishedAt;

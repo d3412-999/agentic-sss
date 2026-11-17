@@ -30,6 +30,7 @@ import org.spring_web.spring_boot_service.entity.Submission;
 import org.spring_web.spring_boot_service.entity.SubmissionVersion;
 import org.spring_web.spring_boot_service.entity.SubmissionVersionFile;
 import org.spring_web.spring_boot_service.entity.Topic;
+import org.spring_web.spring_boot_service.entity.TopicAttachment;
 import org.spring_web.spring_boot_service.mapper.AsyncTaskMapper;
 import org.spring_web.spring_boot_service.mapper.CodeAnalysisMapper;
 import org.spring_web.spring_boot_service.mapper.FileObjectMapper;
@@ -38,6 +39,7 @@ import org.spring_web.spring_boot_service.mapper.SelectionMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionVersionFileMapper;
 import org.spring_web.spring_boot_service.mapper.SubmissionVersionMapper;
+import org.spring_web.spring_boot_service.mapper.TopicAttachmentMapper;
 import org.spring_web.spring_boot_service.mapper.TopicMapper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -73,6 +75,7 @@ public class AiEvaluationService {
     private final ReportEvaluationMapper reportEvaluationMapper;
     private final SelectionMapper selectionMapper;
     private final TopicMapper topicMapper;
+    private final TopicAttachmentMapper topicAttachmentMapper;
     private final FileStorageService fileStorage;
     private final ReportTextExtractor reportTextExtractor;
     private final AiServiceClient aiClient;
@@ -227,6 +230,12 @@ public class AiEvaluationService {
             base.put("topicTitle", topic == null ? "" : topic.getTitle());
             base.put("buildTool", parseResult.getOrDefault("buildTool", "PLAIN"));
             base.put("pageCount", parseResult.get("pageCount"));
+            if (source) {
+                // 课程设计只按教师发布的题目与附件要求评价，不能拿企业级/通用最佳实践来加码。
+                base.put("topicDescription", topic == null || topic.getDescription() == null
+                        ? "" : topic.getDescription());
+                base.put("topicAttachments", topicAttachments(topic));
+            }
 
             SssProperties.Review reviewConfig = properties.getAi().getReview();
             try {
@@ -511,6 +520,52 @@ public class AiEvaluationService {
      */
     private BigDecimal score(Map<String, Object> response) {
         return ScoreGuard.parse(response.get("score"));
+    }
+
+    /**
+     * 教师题目附件摘要：把 PDF/DOCX 正文抽取出来交给 AI，作为课程设计的评分依据。
+     *
+     * <p>附件本身属于教师发布的要求，不是学生材料；仍然限制数量与长度，
+     * 避免一个超大附件挤掉源码正文。其他格式只保留文件名供模型参考。</p>
+     */
+    private List<Map<String, Object>> topicAttachments(Topic topic) {
+        if (topic == null || topic.getId() == null) {
+            return List.of();
+        }
+        List<TopicAttachment> links = topicAttachmentMapper.selectList(
+                new LambdaQueryWrapper<TopicAttachment>()
+                        .eq(TopicAttachment::getTopicId, topic.getId())
+                        .orderByAsc(TopicAttachment::getSortNo)
+                        .last("limit 5"));
+        if (links.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (TopicAttachment link : links) {
+            FileObject file = link.getFileId() == null ? null : fileObjectMapper.selectById(link.getFileId());
+            if (file == null) {
+                continue;
+            }
+            String filename = file.getFilename() == null ? "" : file.getFilename();
+            String text = file.getExtractedText();
+            if (text == null && (filename.toLowerCase().endsWith(".pdf")
+                    || filename.toLowerCase().endsWith(".docx"))) {
+                Path path = fileStorage.locate(file);
+                if (path != null) {
+                    ReportTextExtractor.ExtractedReport extracted =
+                            reportTextExtractor.extract(path, filename);
+                    if (extracted.success()) {
+                        text = extracted.text();
+                    }
+                }
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", filename);
+            item.put("size", file.getSizeBytes());
+            item.put("text", text == null ? "" : truncate(text, 2400));
+            result.add(item);
+        }
+        return result;
     }
 
     /** 只读遍历 zip（复用 ArchiveGuard，与上传校验同一套规则）：统计 Java 文件与代码行、识别构建方式、截取代码片段给 AI。 */

@@ -50,8 +50,8 @@ def test_rules_cap_score_and_are_exposed_as_findings() -> None:
     assert "SYSTEM_OUT" in rule_ids
     assert response.rule_summary.critical >= 1
     assert response.verdict == "BLOCK"
-    # 90 * 0.6 + 85 * 0.4 = 88，但 CRITICAL 规则把总分封顶到 45
-    assert response.score == 45.0
+    # 90 * 0.6 + 85 * 0.4 = 88，但 CRITICAL 规则把总分封顶到 60（课程设计尺度从宽）
+    assert response.score == 60.0
     assert "封顶" in response.summary
     # 提示词里确实带上了确定性扫描结果
     assert fake.prompts and "确定性扫描结果" in fake.prompts[-1]

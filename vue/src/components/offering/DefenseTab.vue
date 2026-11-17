@@ -246,6 +246,7 @@ async function submitCreate() {
 /* ---------- 批量发起 ---------- */
 const batch = ref({ open: false, running: false, data: null, error: '', timer: null })
 const batchConfirm = ref(false)
+const batchTimeLimit = ref(20)
 
 function openBatch() {
   if (!selectedCount.value) return
@@ -263,6 +264,7 @@ async function submitBatch() {
     const data = await api.batchDefenseSessions({
       offeringId: props.offeringId,
       selectionIds: selected.value,
+      timeLimitMinutes: Number(batchTimeLimit.value) || 20,
     })
     batch.value.data = data
     await pollBatch(data.batchId, 0)
@@ -646,6 +648,11 @@ onBeforeUnmount(() => {
           <span class="pill pill--brand">{{ selectedCount }} 人</span>
           <span class="pill">{{ projectedQuestions }} 道计分题</span>
           <span class="pill">另含 {{ selectedCount }} 道加分题（不计分）</span>
+        </div>
+        <div class="row row--wrap" style="gap: 10px; align-items: center">
+          <label class="small" style="min-width: 132px">答辩时长限制（分钟）</label>
+          <input v-model.number="batchTimeLimit" class="input" type="number" min="1" max="240" style="width: 100px" />
+          <span class="small dim">到点后该批次所有答辩强制结束，并自动评分</span>
         </div>
         <div class="table-wrap" style="max-height: 240px; overflow: auto">
           <table class="table">

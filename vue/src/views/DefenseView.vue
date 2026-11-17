@@ -115,7 +115,8 @@ const canStart = computed(() => session.value?.status === 'READY')
 const canFinish = computed(() => session.value?.status === 'IN_PROGRESS')
 // 只有学生能录音作答；教师即使进入同一会话也只是旁听/操作评分，绝不能替学生作答。
 const canAnswer = computed(() => isStudent.value && session.value?.status === 'IN_PROGRESS')
-const canEvaluate = computed(() => isTeacher.value && ['COMPLETED', 'EVALUATED'].includes(session.value?.status))
+// 完成后自动评分，教师手动按钮只保留「EVALUATED 后重新评分」这一种场景。
+const canEvaluate = computed(() => isTeacher.value && session.value?.status === 'EVALUATED')
 const modeText = computed(() => MODE_LABEL[session.value?.mode] || session.value?.mode || '—')
 const statusHint = computed(() => {
   const status = session.value?.status
@@ -126,18 +127,18 @@ const statusHint = computed(() => {
     return {
       tone: 'alert--info',
       text: isTeacher.value
-        ? '题目已就绪。点击右上角「开始答辩」，学生端进入录音作答流程；结束答辩后可发起 AI 评分。'
-        : '点击右上角「开始答辩」后按题目顺序录音作答，录音会自动上传并转写；全部完成后点击「结束答辩」等待教师评分。',
+        ? '题目已就绪。点击右上角「开始答辩」，学生端进入录音作答流程。'
+        : '点击右上角「开始答辩」后按题目顺序录音作答，录音会自动上传并转写；全部完成后点击「结束答辩」。',
     }
   }
   if (status === 'COMPLETED') {
-    return {
-      tone: 'alert--info',
-      text: isTeacher.value ? '学生已结束答辩，可点击「AI 评分」生成答辩成绩。' : '答辩已结束，等待教师完成评分。',
-    }
+    // 教师端不展示「答辩已结束」之类的提示；学生端提示自动评分进度
+    return isTeacher.value
+      ? null
+      : { tone: 'alert--info', text: '答辩已结束，AI 正在自动评分，完成后会自动刷新结果。' }
   }
   if (status === 'EXPIRED') {
-    return { tone: 'alert--warn', text: '本次答辩已过期，请联系教师重新发起。' }
+    return { tone: 'alert--warn', text: '本次答辩已超时结束，请联系教师重新发起。' }
   }
   if (status === 'VIOLATED') {
     return {
@@ -1223,6 +1224,18 @@ function retryPendingUpload() {
 }
 
 /* ---------------- 会话数据 / 状态操作 ---------------- */
+let autoScoreTimer = null
+
+function syncAutoScorePolling() {
+  const waiting = session.value?.status === 'COMPLETED' && session.value?.score == null
+  if (waiting && !autoScoreTimer) {
+    autoScoreTimer = setInterval(() => void load(true), 5000)
+  } else if (!waiting && autoScoreTimer) {
+    clearInterval(autoScoreTimer)
+    autoScoreTimer = null
+  }
+}
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
@@ -1233,6 +1246,7 @@ async function load(silent = false) {
       faceMissCount.value = Number(data?.faceMissCount) || 0
       faceInitialized = true
     }
+    syncAutoScorePolling()
   } catch (err) {
     if (!silent) {
       loadError.value = err?.message || '加载答辩会话失败'
@@ -1482,6 +1496,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeUnload)
   window.removeEventListener('resize', onResize)
+  if (autoScoreTimer) {
+    clearInterval(autoScoreTimer)
+    autoScoreTimer = null
+  }
   if (leaveTimer) {
     clearTimeout(leaveTimer)
     leaveTimer = null
@@ -1528,6 +1546,9 @@ onBeforeUnmount(() => {
           <span v-if="session.durationMs"> · 答辩用时 {{ fmtDuration(session.durationMs) }}</span>
         </span>
         <span v-else class="small muted">语音作答自动转写，教师统一评分。</span>
+        <span v-if="session?.deadlineAt" class="pill pill--warn" style="margin-left: 6px">
+          <Icon name="clock" :size="12" />限时到 {{ fmtTime(session.deadlineAt) }}
+        </span>
       </template>
       <template v-if="!isTeacher" #steps>
         <StepFlow :steps="STUDENT_FLOW" current="defense" dense />

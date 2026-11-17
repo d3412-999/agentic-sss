@@ -85,7 +85,8 @@ public final class DefenseDtos {
             OffsetDateTime overrideAt,
             String bonusResult,
             BigDecimal bonusScore,
-            String bonusComment) {
+            String bonusComment,
+            OffsetDateTime deadlineAt) {
     }
 
     /** 答辩题目；学生角色时 expectedPoints / referenceAnswer 为 null。 */
@@ -227,7 +228,8 @@ public final class DefenseDtos {
      * 默认 null 表示按源码评分分档——这也是推荐用法。</p>
      */
     public record BatchSessionRequest(String offeringId, List<String> selectionIds,
-                                      Integer questionCount, String overrideReason) {
+                                      Integer questionCount, String overrideReason,
+                                      Integer timeLimitMinutes) {
     }
 
     /** 批量发起的一条结果。 */

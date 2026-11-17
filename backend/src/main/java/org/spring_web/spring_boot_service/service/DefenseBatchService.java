@@ -107,8 +107,14 @@ public class DefenseBatchService {
             throw new BizException(org.spring_web.spring_boot_service.common.ErrorCode.PARAM_INVALID,
                     "手动指定题数必须填写理由");
         }
+        int timeLimit = request.timeLimitMinutes() == null ? 20 : request.timeLimitMinutes();
+        if (timeLimit < 1 || timeLimit > 240) {
+            throw new BizException(org.spring_web.spring_boot_service.common.ErrorCode.PARAM_INVALID,
+                    "答辩时间限制需在 1~240 分钟之间");
+        }
 
         LocalDateTime now = Times.now();
+        LocalDateTime deadlineAt = now.plusMinutes(timeLimit);
         DefenseBatchTask task = new DefenseBatchTask();
         task.setOfferingId(offering.getId());
         task.setOperatorId(SecurityUtilsUserId());
@@ -117,7 +123,9 @@ public class DefenseBatchService {
         task.setSucceeded(0);
         task.setSkipped(0);
         task.setFailed(0);
-        task.setConfig("{\"concurrency\":" + concurrency(config) + "}");
+        task.setTimeLimitMinutes(timeLimit);
+        task.setDeadlineAt(deadlineAt);
+        task.setConfig("{\"concurrency\":" + concurrency(config) + ",\"timeLimitMinutes\":" + timeLimit + "}");
         task.setCreatedAt(now);
         taskMapper.insert(task);
 
@@ -229,7 +237,8 @@ public class DefenseBatchService {
         SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
             DefenseDtos.SessionVO session = defenseService.createSession(
-                    String.valueOf(selection.getId()), questionCount, overrideReason);
+                    String.valueOf(selection.getId()), questionCount, overrideReason,
+                    task.getId(), task.getDeadlineAt());
             record(task, selection.getId(), selection.getStudentId(), "SUCCEEDED",
                     parseId(session.id()), session.questionCount(), null);
         } catch (BizException ex) {

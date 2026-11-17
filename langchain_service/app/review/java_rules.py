@@ -216,20 +216,24 @@ def merge_findings(*groups: list[CodeFinding]) -> list[CodeFinding]:
 
 
 def score_cap(findings: list[CodeFinding]) -> float | None:
-    """按确定性 findings 给出综合分上限（混合评分：规则会影响最终分，而不只是提示）。"""
+    """按确定性 findings 给出综合分上限。
+
+    课程设计场景以「完成题目要求」为主，通用规则/安全规范只做提示：
+    下限放宽，避免学生只是写了 System.out 或 TODO 就被压到不及格。
+    """
     critical = sum(1 for item in findings if item.severity == "CRITICAL")
     high = sum(1 for item in findings if item.severity == "HIGH")
     medium = sum(1 for item in findings if item.severity == "MEDIUM")
     if critical:
-        return 45.0
-    if high >= 2:
         return 60.0
+    if high >= 2:
+        return 72.0
     if high:
-        return 70.0
-    if medium >= 4:
         return 80.0
-    if medium >= 2:
+    if medium >= 4:
         return 88.0
+    if medium >= 2:
+        return 92.0
     return None
 
 

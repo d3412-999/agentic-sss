@@ -11,11 +11,21 @@ from app.schemas.common import CamelModel, DimensionScore
 from app.schemas.materials import SourceMaterial, SubmissionFileBrief
 
 
+class TopicAttachmentBrief(CamelModel):
+    """教师题目附件摘要（PDF/DOCX 已抽正文，其他格式只有文件名）。"""
+
+    name: str = ""
+    text: str = ""
+
+
 class CodeReviewRequest(SourceMaterial):
     """源码语义评审请求（对应 API 文档 21.4）。"""
 
     selection_id: str = ""
     topic_title: str = ""
+    # 教师发布的题目描述与附件正文：课程设计只按这些要求评价，不套企业级标准
+    topic_description: str = ""
+    topic_attachments: list[TopicAttachmentBrief] = Field(default_factory=list)
     build_tool: str = "PLAIN"
     # Java 侧把源码 zip 中的 Java 文件拼成一段文本后通过 codeSnippet 传入
     code_snippet: str = ""

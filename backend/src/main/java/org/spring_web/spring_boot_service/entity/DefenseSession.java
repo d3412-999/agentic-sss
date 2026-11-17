@@ -48,6 +48,16 @@ public class DefenseSession {
     private String selectionIds;
 
     /**
+     * 批量发起批次 ID（单条发起为 null）
+     */
+    private Long batchId;
+
+    /**
+     * 答辩截止时间：批量发起时设置，超时由看门狗强制结束
+     */
+    private LocalDateTime deadlineAt;
+
+    /**
      * 题目数量（不含加分题）
      */
     private Integer questionCount;

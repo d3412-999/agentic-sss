@@ -149,6 +149,12 @@ public class DefenseService {
      */
     public DefenseDtos.SessionVO createSession(String selectionId, Integer questionCount,
                                                String overrideReason) {
+        return createSession(selectionId, questionCount, overrideReason, null, null);
+    }
+
+    public DefenseDtos.SessionVO createSession(String selectionId, Integer questionCount,
+                                               String overrideReason,
+                                               Long batchId, LocalDateTime deadlineAt) {
         Long sid = BizAssert.id(selectionId, "selectionId");
         Selection selection = BizAssert.found(selectionMapper.selectById(sid), "选题");
         BizAssert.rule(!"CANCELED".equals(selection.getStatus()), "该选题已退选，不能发起答辩");
@@ -186,7 +192,7 @@ public class DefenseService {
         int finalCount = count;
         TransactionTemplate tx = new TransactionTemplate(transactionManager);
         return tx.execute(status -> persistSession(offering, selection, generated,
-                finalPlan, codeScore, finalCount, finalReason));
+                finalPlan, codeScore, finalCount, finalReason, batchId, deadlineAt));
     }
 
     /** 教师端会话列表：按创建时间倒序，带学生信息与作答进度；题目明细留到详情接口。 */
@@ -553,6 +559,16 @@ public class DefenseService {
         DefenseSession session = loadSession(sessionId);
         // 只有开课所有者（数据级校验）能评分；学生即便命中 /defense/** 也会在这里被 403
         offeringService.ownedOffering(String.valueOf(session.getOfferingId()));
+        return evaluateSession(session);
+    }
+
+    /**
+     * 无登录上下文评分入口：供「结束即自动评分」看门狗调用。
+     *
+     * <p>调 AI 与落库逻辑与教师手动评分完全一致；失败时抛异常、会话保持 COMPLETED，
+     * 看门狗会有限次重试，教师仍可在页面点「重新评分」兜底。</p>
+     */
+    public DefenseDtos.EvaluateResultVO evaluateSession(DefenseSession session) {
         BizAssert.rule("COMPLETED".equals(session.getStatus()) || "EVALUATED".equals(session.getStatus()),
                 "答辩尚未结束，不能评分");
 
@@ -603,6 +619,39 @@ public class DefenseService {
         notificationService.push(session.getStudentId(), "DEFENSE_EVALUATED", "答辩评分完成",
                 "答辩评分已完成，可在答辩页查看结果。", "/defense/" + session.getId());
         return new DefenseDtos.EvaluateResultVO(score, grade, summary);
+    }
+
+    /**
+     * 看门狗入口：超时强制结束。
+     *
+     * <p>进行中 → COMPLETED（随后自动评分）；未开始 → EXPIRED（无作答可评）。
+     * 不校验操作者身份，只由服务端定时任务调用。</p>
+     */
+    public void forceFinish(String sessionId, String reason) {
+        DefenseSession session = loadSession(sessionId);
+        String status = session.getStatus();
+        if (!"READY".equals(status) && !"IN_PROGRESS".equals(status)) {
+            return;
+        }
+        LocalDateTime now = Times.now();
+        if ("IN_PROGRESS".equals(status)) {
+            session.setStatus("COMPLETED");
+            session.setFinishedAt(now);
+            session.setDurationMs(session.getStartedAt() == null ? 0L
+                    : Duration.between(session.getStartedAt(), now).toMillis());
+            markSelectionsDefended(session, now);
+        } else {
+            session.setStatus("EXPIRED");
+            session.setFinishedAt(now);
+        }
+        session.setUpdatedAt(now);
+        updateSession(session);
+        boolean answered = "IN_PROGRESS".equals(status);
+        notificationService.push(session.getStudentId(), "DEFENSE_FINISHED",
+                answered ? "答辩已结束" : "答辩已超时",
+                answered ? "答辩时间已到，系统已自动结束答辩，AI 正在评分。"
+                        : "答辩未在限定时间内开始，系统已标记超时。",
+                "/defense/" + session.getId());
     }
 
     // ---------------------------------------------------------------- 题数规则 / 判定覆盖
@@ -1075,7 +1124,8 @@ public class DefenseService {
                                                  List<GeneratedQuestion> generated,
                                                  DefenseQuestionRule.Plan plan,
                                                  BigDecimal codeScore, int scoredCount,
-                                                 String overrideReason) {
+                                                 String overrideReason,
+                                                 Long batchId, LocalDateTime deadlineAt) {
         LocalDateTime now = Times.now();
         int bonusCount = (int) generated.stream().filter(GeneratedQuestion::bonus).count();
         DefenseSession session = new DefenseSession();
@@ -1084,6 +1134,8 @@ public class DefenseService {
         session.setMode("PER_STUDENT");
         session.setStatus("READY");
         session.setSelectionIds(json.write(List.of(String.valueOf(selection.getId()))));
+        session.setBatchId(batchId);
+        session.setDeadlineAt(deadlineAt);
         // question_count 只统计计分题：加分题单独计数，成绩计算不读它
         session.setQuestionCount(scoredCount);
         session.setCodeScoreSnapshot(codeScore);
@@ -1330,7 +1382,8 @@ public class DefenseService {
                 Times.offset(session.getOverrideAt()),
                 session.getBonusResult(),
                 session.getBonusScore(),
-                session.getBonusComment());
+                session.getBonusComment(),
+                Times.offset(session.getDeadlineAt()));
     }
 
     private List<DefenseDtos.QuestionVO> questionVos(DefenseSession session, boolean teacher) {

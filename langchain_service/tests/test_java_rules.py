@@ -117,7 +117,7 @@ def test_score_cap_and_verdict_follow_severity() -> None:
     critical = [CodeFinding(rule_id="SQL_CONCAT", severity="CRITICAL", file="A.java", line=1)]
     summary = summarize(critical)
     assert summary.verdict == "BLOCK"
-    assert summary.score_cap == 45.0
+    assert summary.score_cap == 60.0
     assert summary.by_rule == {"SQL_CONCAT": 1}
 
     clean = summarize([CodeFinding(rule_id="TODO_FIXME", severity="LOW", file="A.java", line=2)])
@@ -129,7 +129,7 @@ def test_score_cap_and_verdict_follow_severity() -> None:
     ]
     medium_summary = summarize(mediums)
     assert medium_summary.verdict == "WARN"
-    assert medium_summary.score_cap == 88.0
+    assert medium_summary.score_cap == 92.0
 
 
 def test_format_for_prompt_contains_location_and_severity() -> None:
