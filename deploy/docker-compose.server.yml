@@ -1,0 +1,21 @@
+# =============================================================================
+# 服务器部署覆盖文件（与 docker-compose.full.yml 叠加使用）
+#
+# 用途：宿主机 8088/18081/18000 可能被占用，或安全组只开放 80/443 时，
+# 把容器端口只绑定到 127.0.0.1，再由宿主机 Nginx 按域名反代（见 deploy/README-server.md）。
+#
+# 用法（Docker Compose v2.24+）：
+#   docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml up -d
+# =============================================================================
+services:
+  ai:
+    ports: !override
+      - "127.0.0.1:18000:8000"
+
+  backend:
+    ports: !override
+      - "127.0.0.1:18081:8081"
+
+  web:
+    ports: !override
+      - "127.0.0.1:18080:80"
