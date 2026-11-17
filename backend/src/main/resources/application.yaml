@@ -61,6 +61,9 @@ server:
   # 默认 8084：8080 常被 Intel 的 ApplicationWebServer 占用。
   # 改这里之后，务必同步 vue/.env 并重启 Vite（.env 不会热更新）。
   port: ${SERVER_PORT:8084}
+  # 部署在 Nginx 后面时，按 X-Forwarded-Proto/Host/Port 还原原始请求，
+  # 否则 HTTPS 页面发出的 Origin 会被后端当成跨域（登录 403 Invalid CORS request）。
+  forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:framework}
   servlet:
     encoding:
       charset: UTF-8
@@ -84,6 +87,9 @@ management:
       show-details: when_authorized
 
 sss:
+  cors:
+    # 反向代理后除了 forwarded headers，再显式放行正式域名（逗号分隔）。
+    allowed-origins: ${SSS_CORS_ALLOWED_ORIGINS:http://localhost:[*],http://127.0.0.1:[*]}
   jwt:
     # JwtService requires at least 32 bytes; replace with a random value in production
     secret: ${JWT_SECRET:change-me-change-me-change-me-change-me}

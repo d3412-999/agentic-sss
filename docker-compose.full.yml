@@ -96,6 +96,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-change-me-change-me-change-me}
       STORAGE_DIR: /data/objects
       SERVER_PORT: "8081"
+      # 反向代理（Nginx HTTPS）后还原原始协议/域名，避免 Spring CORS 把同源请求判成跨域
+      SERVER_FORWARD_HEADERS_STRATEGY: ${SERVER_FORWARD_HEADERS_STRATEGY:-framework}
+      SSS_CORS_ALLOWED_ORIGINS: ${SSS_CORS_ALLOWED_ORIGINS:-}
       TZ: Asia/Shanghai
     ports:
       - "18081:8081"

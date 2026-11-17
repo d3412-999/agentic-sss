@@ -103,6 +103,10 @@ docker compose -f docker-compose.full.yml -f deploy/docker-compose.server.yml up
 
 ## 六、注意事项
 
+0. **反代后的登录 403（已修复）**：TLS 在 Nginx 终止时，必须让后端看到 `X-Forwarded-Proto/Host/Port`，
+   并在 `.env` 配置 `SSS_CORS_ALLOWED_ORIGINS=https://<公网域名>`；否则浏览器 `Origin` 会被判跨域，
+   登录返回 `403 Invalid CORS request`。compose 已内置这两个环境变量。
+
 1. **磁盘**：服务器根分区约 99G、已用 ~90G（剩余 ~5G），镜像/构建缓存增长后需清理
    （`docker image prune`、`docker builder prune`，不影响运行中的容器）。
 2. **HTTPS**：已配置 443 自签名证书（浏览器首次需手动信任），摄像头/麦克风必须走 HTTPS；

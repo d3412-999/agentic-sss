@@ -5,6 +5,14 @@
 
 ## [Unreleased]
 
+### 修复（HTTPS 部署后登录 403）
+
+- 根因：Nginx TLS 终止后，Spring 仍按 HTTP 处理请求，浏览器 `Origin: https://...` 被判定为跨域，
+  登录等 POST 返回 `Invalid CORS request`（403）；
+- 修复：后端启用 `server.forward-headers-strategy=framework`；Nginx 增加 `X-Forwarded-Host/Port`；
+  compose 支持 `SSS_CORS_ALLOWED_ORIGINS` 显式白名单兜底；
+- 实测：带浏览器同源 `Origin` 的 `POST /api/v1/auth/login` 返回 200，学生/教师账号均可登录。
+
 ### 修复（答辩教师视角 / 学生摄像头 / 教师初始密码）
 
 - **答辩角色**：`canAnswer` 增加学生角色判断，教师进入答辩会话只保留旁听、开始/结束与评分控件，
